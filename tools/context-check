@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Validate the documented public context subset; never fetch link targets."""
+
+import os
+import re
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+READ_CHAIN = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → RFC/ADR/Ready Issue"
+LAYERS = ["L4 Experience", "L3 Decision", "L2 Contract", "L1.5 Orchestration", "L1 Adapter", "L0 Execution"]
+PLANES = ["Media", "Transport", "Evaluation", "Data Governance"]
+FIELDS = [
+    "repository_identity", "workspace_type", "current_branch_and_commit",
+    "authoritative_files_read", "task_goal", "non_goals", "affected_layers",
+    "affected_cross_cutting_planes", "public_inclusion_basis",
+    "data_and_license_classification", "planned_files", "required_tests",
+    "architecture_conflicts", "approval_required",
+]
+REQUIRED = [
+    "README.md", "START_HERE.md", "AGENTS.md", "PROJECT_CONTEXT.md", "BRIEF.md",
+    "docs/ARCHITECTURE.md", "docs/context-map.md", "docs/REPOSITORY_SCOPE.md",
+    "docs/PROJECTS.md", "docs/PUBLICATION_POLICY.md", "docs/CONTRIBUTOR_WORKFLOW.md",
+    "docs/AGENT_QUICKSTART.md", "projects/README.md",
+]
+ROOT_SCRATCH = {".superpowers", ".agents", ".codex", ".venv", "build", "dist"}
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def contained(path):
+    if not path.resolve().is_relative_to(ROOT):
+        fail(f"path escape: {path.relative_to(ROOT)}")
+
+
+def section(text, title):
+    match = re.search(rf"^#{{1,2}} {re.escape(title)}\n(.*?)(?=^#{{1,2}} |\Z)", text, re.M | re.S)
+    return match.group(1) if match else ""
+
+
+def navigation_text(text):
+    """Ignore fenced/inline code examples, not document navigation."""
+    lines = []
+    fence = None
+    for line in text.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            continue
+        if fence is None:
+            lines.append(line)
+    return re.sub(r"(`+).*?\1", "", "\n".join(lines))
+
+
+def check_links(path):
+    text = navigation_text(path.read_text(encoding="utf-8"))
+    label = str(path.relative_to(ROOT))
+    if re.search(r"\]\s*\[|^\s*\[[^\]]+\]:|<[^>]*(?:href|src)\s*=", text, re.M | re.I):
+        fail(f"{label}: unsupported reference or HTML link syntax")
+    pattern = re.compile(r"!?\[[^\]\n]*\]\(([^()\n]*)\)")
+    for match in pattern.finditer(text):
+        target = match.group(1)
+        if re.match(r"^(https?://|mailto:)", target):
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_./#-]+", target):
+            fail(f"{label}: unsupported local link syntax: {target}")
+        destination = target.split("#", 1)[0]
+        if not destination:
+            continue
+        candidate = path.parent / destination
+        if Path(destination).is_absolute():
+            fail(f"{label}: path escape in local link: {target}")
+        contained(candidate)
+        if not candidate.exists():
+            fail(f"{label}: missing local link target: {target}")
+    remaining = pattern.sub("", text)
+    remaining = re.sub(r"\[(?: |x|X)\]", "", remaining)
+    if re.search(r"\[[^\]\n]*\]|<(?!(?:https?://|mailto:))[^>]+>", remaining):
+        fail(f"{label}: unsupported local reference syntax")
+
+
+def check_context():
+    documents = {}
+    for name in REQUIRED:
+        path = ROOT / name
+        contained(path)
+        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+            fail(f"missing or empty context file: {name}")
+        documents[name] = path.read_text(encoding="utf-8")
+    for name in ["START_HERE.md", "AGENTS.md", "docs/context-map.md"]:
+        chains = [line for line in documents[name].splitlines() if line.startswith("START_HERE.md →")]
+        if chains != [READ_CHAIN]:
+            fail(f"{name}: invalid required read order")
+    for name in ["PROJECT_CONTEXT.md", "docs/ARCHITECTURE.md"]:
+        layers = re.findall(r"^(?:- |\| )(L\d+(?:\.\d+)? [^|\n]+?)(?:\s*\||$)", documents[name], re.M)
+        if layers != LAYERS:
+            fail(f"{name}: canonical layer mapping must be {LAYERS}")
+        planes = re.findall(r"^- ([^:\n]+)(?::|$)", section(documents[name], "Cross-cutting planes"), re.M)
+        if planes != PLANES:
+            fail(f"{name}: canonical plane mapping must be {PLANES}")
+    outcomes = re.findall(r"^- (.+)$", section(documents["docs/REPOSITORY_SCOPE.md"], "Placement outcomes"), re.M)
+    if outcomes != ["`ACCEPT_IN_PUBLIC_REPOSITORY`", "`EXCLUDE_FROM_PUBLIC_REPOSITORY`"]:
+        fail("docs/REPOSITORY_SCOPE.md: invalid placement outcomes")
+    fields = re.findall(r"^- `([^`]+)`", section(documents["AGENTS.md"], "Handshake fields"), re.M)
+    missing = [field for field in FIELDS if field not in fields]
+    if missing:
+        fail(f"AGENTS.md: missing handshake fields: {', '.join(missing)}")
+    for directory, names, files in os.walk(ROOT):
+        parent = Path(directory)
+        in_project = parent.is_relative_to(ROOT / "projects")
+        names[:] = sorted(name for name in names if name != ".git" and not (
+            parent == ROOT and name in ROOT_SCRATCH
+        ) and not (not in_project and name == "__pycache__"))
+        for name in names + files:
+            if name == ".git":
+                continue
+            contained(parent / name)
+        for name in sorted(files):
+            if name.endswith(".md"):
+                check_links(parent / name)
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) != 1:
+            fail("usage: tools/context-check")
+        check_context()
+    except (ValueError, OSError, UnicodeError, RuntimeError) as error:
+        print(f"context: {error}", file=sys.stderr)
+        sys.exit(1)
+    print("context: ok")

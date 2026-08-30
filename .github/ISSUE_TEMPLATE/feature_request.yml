@@ -1,0 +1,34 @@
+name: Feature or RFC request
+description: Propose a public capability, contract, or workflow improvement
+title: "proposal: "
+labels: ["proposal", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Public issues are publication. Review rights before posting. An Agent cannot grant publication/IP permission; excluded material must not be posted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user or interoperability problem without prescribing a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and constraints
+      description: State the public inclusion basis, data/licenses, affected six-layer/four-plane areas, and safety/compatibility constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: Include alternatives, non-goals, project/module paths, and whether a root RFC is needed. Projects must not copy shared protocol schemas.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable checks and required human approvals. A proposal is not a Ready Issue or release; unrun HIL is pending.
+    validations:
+      required: true

@@ -1,0 +1,10 @@
+[project]
+name = "argvid"
+version = "0.0.0"
+description = "Intent-driven active photography protocol and reference implementations"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+
+[tool.argvid]
+status = "pre-alpha"

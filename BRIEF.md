@@ -1,0 +1,36 @@
+# Current brief
+
+Updated: 2026-08-30
+
+Phase: public framework, pre-alpha
+
+Protocol stage: `pre-alpha` (unversioned; not a release)
+
+## Current objective
+
+Make the public repository understandable, independently checkable, and ready for approved public project proposals before implementation.
+
+## Fixed boundaries
+
+- Six canonical layers and four planes are defined in [architecture](docs/ARCHITECTURE.md).
+- Contracts, reproducible references, validation, complete public project delivery, and governance/tooling are valid inclusion bases.
+- Default source/documentation license is Apache-2.0; hardware source publication needs a reviewed license.
+- Shared protocol changes use root RFCs, fixtures, and conformance.
+- Safety logic is deterministic and fail-safe.
+- Public branches, draft PRs, and CI output require publication review before the first push.
+
+## Now
+
+- [x] Document repository scope, contributor onboarding, and project activation.
+- [x] Provide a proposed project template and offline context/project gates.
+- [ ] Accept the first contract RFC with valid/invalid synthetic fixtures.
+- [ ] Implement a conformance runner against approved contracts.
+- [ ] Activate replay and simulation/host-test work through approved Ready Issues.
+
+## Pending, not claimed
+
+No stable public API or released protocol compatibility; no implemented app/device project; no hardware-in-the-loop validation; no production safety certification. Hardware source licensing, capability granularity, and evidence publication/storage remain review decisions.
+
+## Handoff
+
+The next Ready Issue should bound a public contract proposal and synthetic acceptance cases. The template alone grants no implementation, publication, or release permission.

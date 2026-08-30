@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -eu
+
+command -v git >/dev/null 2>&1 || { echo "missing: git" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "missing: python3" >&2; exit 1; }
+
+python3 - <<'PY'
+import sys
+
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        f"python >= 3.12 required; found {sys.version.split()[0]}\n"
+        "Install a supported runtime, for example:\n"
+        "  pyenv install 3.12\n"
+        "  pyenv local 3.12\n"
+        "Then run: make doctor"
+    )
+print(f"python: {sys.version.split()[0]}")
+PY
+
+git --version
+echo "doctor: ok"

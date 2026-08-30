@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Validate public project manifests without YAML dependencies or execution."""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LAYERS = {"L4": "Experience", "L3": "Decision", "L2": "Contract", "L1.5": "Orchestration", "L1": "Adapter", "L0": "Execution"}
+PLANES = ["Media", "Transport", "Evaluation", "Data Governance"]
+LIST_KEYS = {"layers", "cross_cutting_planes", "entrypoints", "verification"}
+DEFAULTS = {
+    "project_id": "example-project", "status": "proposed", "license": "Apache-2.0",
+    "protocol_version": "pre-alpha", "layers": [], "cross_cutting_planes": [],
+    "entrypoints": [], "verification": [], "fixture_policy": "synthetic-only",
+    "third_party_review": "required",
+}
+DOCUMENTS = ["README.md", "PROJECT_CONTEXT.md", "BRIEF.md", "architecture.md", "THIRD_PARTY.md", "src/README.md", "tests/README.md", "fixtures/README.md", "docs/README.md"]
+STRING = r'(?:"(?:[^"\\]|\\.)*"|[A-Za-z0-9_./:+=@-][A-Za-z0-9_./:+=@ -]*)'
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def scalar(raw, key):
+    raw = raw.strip()
+    if not re.fullmatch(STRING, raw):
+        fail(f"{key}: malformed or blank scalar string")
+    value = json.loads(raw) if raw.startswith('"') else raw
+    if not value.strip() or any(ord(char) < 32 for char in value):
+        fail(f"{key}: blank or control-character scalar")
+    return value
+
+
+def flow_list(raw, key):
+    if not re.fullmatch(rf"\[\s*(?:{STRING}(?:\s*,\s*{STRING})*)?\s*\]", raw):
+        fail(f"{key}: malformed single-line flow list")
+    content = raw[1:-1].strip()
+    items = [scalar(match.group(), key) for match in re.finditer(STRING, content)]
+    if len(items) != len(set(items)):
+        fail(f"{key}: duplicate list value")
+    return items
+
+
+def manifest(path):
+    data = {}
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([a-z_]+):\s*(.*)", line)
+        if not match:
+            fail(f"project.yaml:{number}: malformed top-level line")
+        key, raw = match.groups()
+        if key not in DEFAULTS:
+            fail(f"project.yaml:{number}: unknown key {key}")
+        if key in data:
+            fail(f"project.yaml:{number}: duplicate key {key}")
+        data[key] = flow_list(raw, key) if key in LIST_KEYS else scalar(raw, key)
+    missing = DEFAULTS.keys() - data.keys()
+    if missing:
+        fail(f"project.yaml: missing keys: {', '.join(sorted(missing))}")
+    return data
+
+
+def contained(path, boundary):
+    if not path.resolve().is_relative_to(boundary):
+        fail(f"path escape: {path}")
+
+
+def check_architecture(project, data):
+    rows = {}
+    for line in (project / "architecture.md").read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells[0] == "Area" or set(cells[0]) <= {"-", ":", " "}:
+            continue
+        if len(cells) != 3 or not cells[2] or cells[1] not in {"implemented", "reused", "not-applicable"}:
+            fail("architecture: expected Area | Status | Rationale rows")
+        if cells[0] in rows:
+            fail(f"architecture: duplicate mapping {cells[0]}")
+        rows[cells[0]] = cells[1]
+    expected = [f"{key} {name}" for key, name in LAYERS.items()] + PLANES
+    if set(rows) != set(expected):
+        fail("architecture: map all six canonical layers and four planes exactly")
+    implemented = {name for name, status in rows.items() if status == "implemented"}
+    declared = {f"{key} {LAYERS[key]}" for key in data["layers"]} | set(data["cross_cutting_planes"])
+    if implemented != declared:
+        fail("architecture: implemented mappings disagree with manifest layers/planes")
+
+
+def check_project(project):
+    contained(project, ROOT / "projects")
+    if not project.is_dir():
+        fail(f"missing project directory: {project}")
+    if project.is_symlink():
+        fail(f"directory symlink is forbidden: {project}")
+    if project.parent.resolve() != ROOT / "projects":
+        fail(f"project must be an immediate projects directory: {project}")
+    # Inspect every project path, including source/docs with scratch-like names.
+    for directory, names, files in os.walk(project):
+        parent = Path(directory)
+        for name in names + files:
+            path = parent / name
+            contained(path, project.resolve())
+            if path.is_symlink() and path.is_dir():
+                fail(f"directory symlink is forbidden: {path}")
+            if path.name == "schema" and path.parent.name == "protocol":
+                fail(f"copied protocol/schema is forbidden: {path}")
+    for name in ["project.yaml", *DOCUMENTS]:
+        path = project / name
+        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+            fail(f"missing or empty project file: {path}")
+    data = manifest(project / "project.yaml")
+    if set(data["layers"]) - LAYERS.keys():
+        fail("layers: unknown canonical layer identifier")
+    if set(data["cross_cutting_planes"]) - set(PLANES):
+        fail("cross_cutting_planes: unknown plane")
+    if project.name == "_template":
+        if data != DEFAULTS:
+            fail("template: must retain the exact proposed, pre-alpha defaults")
+    else:
+        if data["project_id"] != project.name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", project.name):
+            fail("project_id: must match the lower-case hyphenated directory name")
+        for key in ["layers", "entrypoints", "verification"]:
+            if not data[key]:
+                fail(f"{key}: real projects require a nonempty list")
+    if data["protocol_version"] != "pre-alpha":
+        fail("protocol_version: no approved immutable release identity yet; use pre-alpha")
+    for entry in data["entrypoints"]:
+        path = Path(entry)
+        if path.is_absolute() or ".." in path.parts or "\\" in entry:
+            fail(f"entrypoint must be project-relative without traversal: {entry}")
+        target = project / path
+        contained(target, project.resolve())
+        if not target.exists():
+            fail(f"missing entrypoint: {entry}")
+    readme = (project / "README.md").read_text(encoding="utf-8")
+    for command in data["verification"]:
+        if command not in readme:
+            fail(f"verification command not documented in README: {command}")
+    check_architecture(project, data)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1].startswith("-")):
+        print("usage: tools/project-check [PROJECT_DIRECTORY]", file=sys.stderr)
+        sys.exit(2)
+    try:
+        if len(sys.argv) == 2:
+            if ".." in Path(sys.argv[1]).parts:
+                fail("project path traversal is forbidden")
+            candidates = [Path(os.path.abspath(sys.argv[1]))]
+        else:
+            template = ROOT / "projects/_template"
+            if not template.is_dir():
+                fail("missing required project template: projects/_template")
+            candidates = sorted(path for path in (ROOT / "projects").iterdir() if path.is_dir() or path.is_symlink())
+        for candidate in candidates:
+            check_project(candidate)
+    except (ValueError, OSError, UnicodeError, RuntimeError) as error:
+        print(f"project: {error}", file=sys.stderr)
+        sys.exit(1)
+    print(f"project: ok ({len(candidates)} checked)")

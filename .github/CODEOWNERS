@@ -1,0 +1,12 @@
+# Public review routing; enforcement depends on repository protection settings.
+* @GynnZhang
+
+/protocol/ @GynnZhang
+/conformance/ @GynnZhang
+/firmware/ @GynnZhang
+/hardware/ @GynnZhang
+/docs/decisions/ @GynnZhang
+/.github/ @GynnZhang
+/projects/ @GynnZhang
+/reference-director/ @GynnZhang
+/tools/ @GynnZhang

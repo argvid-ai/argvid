@@ -1,0 +1,34 @@
+name: Bug report
+description: Report reproducible incorrect behavior in a public component
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: This issue is public immediately. Review publication rights before posting; exclude credentials and restricted/personal media. Report vulnerabilities via SECURITY.md instead.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Observed behavior
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include commands, synthetic/public fixtures, source SHAs, interface identity, environment, and device/firmware/build versions where applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Verification evidence
+      description: Reviewed public logs, actual results, and checks not run. Unrun HIL remains pending.
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Public-boundary check
+      options:
+        - label: This report contains no credentials, restricted data, or private user media.
+          required: true

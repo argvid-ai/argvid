@@ -1,0 +1,10 @@
+project_id: example-project
+status: proposed
+license: Apache-2.0
+protocol_version: pre-alpha
+layers: []
+cross_cutting_planes: []
+entrypoints: []
+verification: []
+fixture_policy: synthetic-only
+third_party_review: required
