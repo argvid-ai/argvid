@@ -16,7 +16,7 @@ Install JDK 17 and Android SDK Platform 36 plus Android SDK Build-Tools 36.0.0. 
 
 Open `src` in Android Studio or use its wrapper. The launcher is [MainActivity](src/app/src/main/kotlin/ai/argvid/gen0/MainActivity.kt). The application ID is `ai.argvid.gen0.camera`; Kotlin namespaces use `ai.argvid.gen0`. The app uses a fresh, local-only Room version-1 database in its own sandbox. It does not migrate or erase another app's data.
 
-This revision's recorded build evidence is macOS-only. Strict verification now records the Linux AAPT2 checksum for the Ubuntu CI job, but no Ubuntu CI run is claimed; see [verification limits](docs/verification.md).
+This revision's recorded build evidence is macOS-only. Strict verification records the Linux AAPT2 checksum and reviewed cold-resolution metadata; consult the [Android workflow result](https://github.com/argvid-ai/argvid/actions/workflows/android.yml) for the exact commit. A local macOS build does not establish Ubuntu verification; see [verification limits](docs/verification.md).
 
 ## Verification
 
