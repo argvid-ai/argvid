@@ -91,7 +91,19 @@ CREDENTIAL_MARKERS = {
     "-----BEGIN PRIVATE KEY-----",
 }
 ANDROID_GENERATED_ROOT = ROOT / "projects/gen0-android/src"
-ANDROID_GENERATED_DIRECTORY_NAMES = {".gradle", ".kotlin", "build"}
+ANDROID_GENERATED_DIRECTORY_ROOTS = {
+    ANDROID_GENERATED_ROOT / ".gradle",
+    ANDROID_GENERATED_ROOT / ".kotlin",
+    ANDROID_GENERATED_ROOT / "build",
+    ANDROID_GENERATED_ROOT / "app/build",
+    ANDROID_GENERATED_ROOT / "core/domain/build",
+    ANDROID_GENERATED_ROOT / "adapter/capture/build",
+    ANDROID_GENERATED_ROOT / "adapter/gimbal/build",
+    ANDROID_GENERATED_ROOT / "data/media/build",
+    ANDROID_GENERATED_ROOT / "feature/session/build",
+    ANDROID_GENERATED_ROOT / "feature/today/build",
+    ANDROID_GENERATED_ROOT / "testing/fixtures/build",
+}
 
 
 def public_paths():
@@ -105,10 +117,7 @@ def public_paths():
 
 
 def is_android_generated_directory(directory: Path) -> bool:
-    return directory.is_relative_to(ANDROID_GENERATED_ROOT) and any(
-        part in ANDROID_GENERATED_DIRECTORY_NAMES
-        for part in directory.relative_to(ANDROID_GENERATED_ROOT).parts
-    )
+    return any(directory.is_relative_to(root) for root in ANDROID_GENERATED_DIRECTORY_ROOTS)
 
 
 def empty_directories() -> list[str]:
@@ -125,10 +134,18 @@ def empty_directories() -> list[str]:
 
 class SkeletonTests(unittest.TestCase):
     def test_empty_directory_scan_keeps_source_directories(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as temporary_directory:
-            empty_source = Path(temporary_directory) / "source-empty"
-            empty_source.mkdir()
-            self.assertIn(str(empty_source.relative_to(ROOT)), empty_directories())
+        source_root = ROOT / "projects/gen0-android/src/app/src/main"
+        with tempfile.TemporaryDirectory(dir=source_root) as temporary_directory:
+            source_directories = [
+                Path(temporary_directory) / name
+                for name in ("source-empty", "build", ".gradle", ".kotlin")
+            ]
+            for directory in source_directories:
+                directory.mkdir()
+            empty = set(empty_directories())
+            self.assertTrue(
+                all(str(directory.relative_to(ROOT)) in empty for directory in source_directories)
+            )
 
     def test_required_files_exist(self) -> None:
         missing = sorted(path for path in REQUIRED_FILES if not (ROOT / path).is_file())
