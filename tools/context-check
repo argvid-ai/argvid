@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-READ_CHAIN = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → RFC/ADR/Ready Issue"
+READ_CHAIN = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → applicable RFC/ADR → task scope (Issue or task brief)"
 LAYERS = ["L4 Experience", "L3 Decision", "L2 Contract", "L1.5 Orchestration", "L1 Adapter", "L0 Execution"]
 PLANES = ["Media", "Transport", "Evaluation", "Data Governance"]
 FIELDS = [
@@ -22,7 +22,7 @@ REQUIRED = [
     "README.md", "START_HERE.md", "AGENTS.md", "PROJECT_CONTEXT.md", "BRIEF.md",
     "docs/ARCHITECTURE.md", "docs/context-map.md", "docs/REPOSITORY_SCOPE.md",
     "docs/PROJECTS.md", "docs/PUBLICATION_POLICY.md", "docs/CONTRIBUTOR_WORKFLOW.md",
-    "docs/AGENT_QUICKSTART.md", "projects/README.md",
+    "docs/AGENT_QUICKSTART.md", "docs/USING.md", "docs/TASK_HANDOFF.md", "projects/README.md",
 ]
 ROOT_SCRATCH = {".superpowers", ".agents", ".codex", ".venv", "build", "dist"}
 

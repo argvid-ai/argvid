@@ -1,0 +1,10 @@
+{
+  "scenario_version": "gen0.parity/1.0",
+  "id": "session.stop-from-running-ends",
+  "initial_state": "running",
+  "event": "stop_requested",
+  "expected": {
+    "accepted": true,
+    "state": "ending"
+  }
+}

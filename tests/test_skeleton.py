@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -89,6 +90,20 @@ CREDENTIAL_MARKERS = {
     "ghp_",
     "-----BEGIN PRIVATE KEY-----",
 }
+ANDROID_GENERATED_ROOT = ROOT / "projects/gen0-android/src"
+ANDROID_GENERATED_DIRECTORY_ROOTS = {
+    ANDROID_GENERATED_ROOT / ".gradle",
+    ANDROID_GENERATED_ROOT / ".kotlin",
+    ANDROID_GENERATED_ROOT / "build",
+    ANDROID_GENERATED_ROOT / "app/build",
+    ANDROID_GENERATED_ROOT / "core/domain/build",
+    ANDROID_GENERATED_ROOT / "adapter/capture/build",
+    ANDROID_GENERATED_ROOT / "adapter/gimbal/build",
+    ANDROID_GENERATED_ROOT / "data/media/build",
+    ANDROID_GENERATED_ROOT / "feature/session/build",
+    ANDROID_GENERATED_ROOT / "feature/today/build",
+    ANDROID_GENERATED_ROOT / "testing/fixtures/build",
+}
 
 
 def public_paths():
@@ -101,7 +116,37 @@ def public_paths():
         yield from (parent / name for name in names + files if name != ".git")
 
 
+def is_android_generated_directory(directory: Path) -> bool:
+    return any(directory.is_relative_to(root) for root in ANDROID_GENERATED_DIRECTORY_ROOTS)
+
+
+def empty_directories() -> list[str]:
+    empty = []
+    for directory in public_paths():
+        if not directory.is_dir():
+            continue
+        if is_android_generated_directory(directory):
+            continue
+        if not any(directory.iterdir()):
+            empty.append(str(directory.relative_to(ROOT)))
+    return sorted(empty)
+
+
 class SkeletonTests(unittest.TestCase):
+    def test_empty_directory_scan_keeps_source_directories(self) -> None:
+        source_root = ROOT / "projects/gen0-android/src/app/src/main"
+        with tempfile.TemporaryDirectory(dir=source_root) as temporary_directory:
+            source_directories = [
+                Path(temporary_directory) / name
+                for name in ("source-empty", "build", ".gradle", ".kotlin")
+            ]
+            for directory in source_directories:
+                directory.mkdir()
+            empty = set(empty_directories())
+            self.assertTrue(
+                all(str(directory.relative_to(ROOT)) in empty for directory in source_directories)
+            )
+
     def test_required_files_exist(self) -> None:
         missing = sorted(path for path in REQUIRED_FILES if not (ROOT / path).is_file())
         self.assertEqual([], missing, f"Missing required files: {missing}")
@@ -119,13 +164,8 @@ class SkeletonTests(unittest.TestCase):
         self.assertEqual({}, incomplete, f"Incomplete module boundary docs: {incomplete}")
 
     def test_repository_has_no_empty_directories(self) -> None:
-        empty = []
-        for directory in public_paths():
-            if not directory.is_dir():
-                continue
-            if not any(directory.iterdir()):
-                empty.append(str(directory.relative_to(ROOT)))
-        self.assertEqual([], sorted(empty), f"Empty directories are not allowed: {empty}")
+        empty = empty_directories()
+        self.assertEqual([], empty, f"Empty directories are not allowed: {empty}")
 
     def test_public_tree_has_no_credential_markers(self) -> None:
         findings: dict[str, list[str]] = {}

@@ -1,0 +1,7 @@
+{
+  "scenario_version": "gen0.parity/1.0",
+  "id": "moment.proxy-rescue-window",
+  "quality_tier": "proxy",
+  "window_us": 15000000,
+  "expected_state": "committed_rescue"
+}

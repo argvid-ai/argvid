@@ -1,0 +1,10 @@
+{
+  "scenario_version": "gen0.parity/1.0",
+  "id": "session.motion-started-pauses",
+  "initial_state": "running",
+  "event": "motion_started",
+  "expected": {
+    "accepted": true,
+    "state": "paused_motion"
+  }
+}

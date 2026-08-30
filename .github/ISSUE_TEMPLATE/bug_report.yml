@@ -5,7 +5,7 @@ labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
-      value: This issue is public immediately. Review publication rights before posting; exclude credentials and restricted/personal media. Report vulnerabilities via SECURITY.md instead.
+      value: This issue is public immediately. An Issue is optional for an ordinary small fix; a direct PR is welcome. Review publication rights before posting; exclude credentials and restricted/personal media. Report vulnerabilities via SECURITY.md instead.
   - type: textarea
     id: outcome
     attributes:

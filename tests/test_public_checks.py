@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-READ_CHAIN = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → RFC/ADR/Ready Issue"
+READ_CHAIN = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → applicable RFC/ADR → task scope (Issue or task brief)"
 LAYERS = ["L4 Experience", "L3 Decision", "L2 Contract", "L1.5 Orchestration", "L1 Adapter", "L0 Execution"]
 PLANES = ["Media", "Transport", "Evaluation", "Data Governance"]
 FIELDS = [
@@ -41,7 +41,7 @@ class CandidateTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "candidate"
         self.root.mkdir()
         shutil.copytree(ROOT / "tools", self.root / "tools")
-        for path in ["README.md", "START_HERE.md", "AGENTS.md", "PROJECT_CONTEXT.md", "BRIEF.md", "docs/ARCHITECTURE.md", "docs/context-map.md", "docs/REPOSITORY_SCOPE.md", "docs/PROJECTS.md", "docs/PUBLICATION_POLICY.md", "docs/CONTRIBUTOR_WORKFLOW.md", "docs/AGENT_QUICKSTART.md", "projects/README.md"]:
+        for path in ["README.md", "START_HERE.md", "AGENTS.md", "PROJECT_CONTEXT.md", "BRIEF.md", "docs/ARCHITECTURE.md", "docs/context-map.md", "docs/REPOSITORY_SCOPE.md", "docs/PROJECTS.md", "docs/PUBLICATION_POLICY.md", "docs/CONTRIBUTOR_WORKFLOW.md", "docs/AGENT_QUICKSTART.md", "docs/USING.md", "docs/TASK_HANDOFF.md", "projects/README.md"]:
             self.put(path, "# Public candidate\n")
         for path in ["START_HERE.md", "AGENTS.md", "docs/context-map.md"]:
             self.put(path, "# Read order\n\n" + READ_CHAIN + "\n")
@@ -88,6 +88,30 @@ class CandidateTests(unittest.TestCase):
 
 
 class ContextCheckTests(CandidateTests):
+    def test_task_scope_read_chain_is_accepted(self):
+        self.run_check("context-check", contains="context: ok")
+
+    def test_old_issue_only_read_chain_is_rejected(self):
+        old_chain = "START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → RFC/ADR/Ready Issue"
+        for path in ["START_HERE.md", "AGENTS.md", "docs/context-map.md"]:
+            self.replace(path, READ_CHAIN, old_chain)
+        self.run_check("context-check", expected=1, contains="invalid required read order")
+
+    def test_missing_authoritative_read_chain_is_rejected(self):
+        for path in ["START_HERE.md", "AGENTS.md", "docs/context-map.md"]:
+            with self.subTest(path=path):
+                original = (self.root / path).read_text(encoding="utf-8")
+                self.replace(path, READ_CHAIN, "Task details alone are not authority.")
+                self.run_check("context-check", expected=1, contains=f"{path}: invalid required read order")
+                self.put(path, original)
+
+    def test_missing_audience_or_handoff_guide_is_rejected(self):
+        for path in ["docs/USING.md", "docs/TASK_HANDOFF.md"]:
+            with self.subTest(path=path):
+                (self.root / path).unlink()
+                self.run_check("context-check", expected=1, contains=f"missing or empty context file: {path}")
+                self.put(path, "# Public candidate\n")
+
     def test_valid_context_from_another_working_directory(self):
         self.run_check("context-check", cwd=self.root.parent)
 
