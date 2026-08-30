@@ -12,16 +12,16 @@ The [README commands](../README.md#verification) are the normal entrypoints. The
 ./gradlew --no-daemon --max-workers=2 --dependency-verification=strict testDebugUnitTest :core:domain:test :testing:fixtures:test lintDebug :app:assembleDebug assembleDebugAndroidTest --rerun-tasks --no-build-cache
 ```
 
-Result: `BUILD SUCCESSFUL in 1m 6s`; `480 actionable tasks: 480 executed`. The JUnit XML results contain **99 tests, zero failures, zero errors, zero skipped**. Android instrumentation APKs compiled; none were installed or executed.
+Result: `BUILD SUCCESSFUL in 58s`; `480 actionable tasks: 480 executed`. The 24 fresh JUnit XML reports contain **104 tests, zero failures, zero errors, zero skipped**. Android instrumentation APKs compiled; none were installed or executed.
 
 | Unit-test module | Tests |
 |---|---:|
 | app | 1 |
-| core/domain | 33 |
+| core/domain | 37 |
 | adapter/capture | 12 |
 | adapter/gimbal | 7 |
 | data/media | 20 |
-| feature/session | 17 |
+| feature/session | 18 |
 | feature/today | 6 |
 | testing/fixtures | 3 |
 
@@ -51,7 +51,11 @@ Two additional failing-then-passing tests use real Session/capture/moment orches
 
 The staged-file integration test uses an actual temporary file, the production record-to-Room-entity mapping, and LocalDeletionCoordinator/AppPrivateStagingStore. Save/discard failure leaves a linked cleanup-pending row; a failed Today staging deletion stays retryable without a completed receipt; retry removes the file before completion. The DAO adapter itself is exercised by the compiled-only Room integration test. Today exposes the persisted cleanup link after repository recreation.
 
+Five additional failing-then-passing host regressions cover gallery publication followed by catalog failure. Four coordinator tests verify retained URI/staging metadata, no premature cleanup/completion, one encode/publication across catalog retry, rejected abandon/new rescue, stop/restart, and cancellation while catalog insertion is suspended. A SessionViewModel test uses the real coordinator and verifies the distinct catalog-retry status survives notices and stop/restart without offering full-save abandonment. These tests inject failure at the catalog port; they do not execute Android Room/MediaStore or establish process-death recovery.
+
 `RuntimeRecreationTest` and `MomentPlayerLifecycleTest` compile checks for retained owners across Activity recreation and a surviving PlayerView attaching the next player after background/foreground/play. Their runtime assertions have **not** been executed. The surface test's synthetic URI checks player identity/attachment, not decoded video correctness. No runtime recreation, frame-rendering, or device-behavior pass is inferred from compilation.
+
+The codec instrumentation duration assertion currently checks input-derived `encoded.durationUs`, not measured duration from the generated MP4. Measuring actual output duration remains deferred to device-validation preparation; this revision adds no encoded-duration measurement or device-execution claim.
 
 ## Wrapper verification
 

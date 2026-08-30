@@ -22,6 +22,7 @@ data class SessionUiState(
     val statusText: String = "准备开始前台会话",
     val showSaved: Boolean = false,
     val showSaveFailure: Boolean = false,
+    val showCatalogFailure: Boolean = false,
     val showCleanupFailure: Boolean = false,
     val permissionRequest: AppPermission? = null,
     val resumeConfirmationRequired: Boolean = false,

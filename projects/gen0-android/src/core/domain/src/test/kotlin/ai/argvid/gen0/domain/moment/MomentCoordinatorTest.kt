@@ -2,10 +2,13 @@ package ai.argvid.gen0.domain.moment
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -104,6 +107,95 @@ class MomentCoordinatorTest {
     }
 
     @Test
+    fun catalogFailureRetainsPublishedReferenceForCatalogOnlyRetry() = runTest {
+        val harness = Harness(catalogFailures = 1)
+
+        val failed = harness.coordinator.captureRescue(15_000_000)
+
+        assertNotNull(failed.failure)
+        assertFalse(failed.state is MomentState.Saving)
+        assertFalse(failed.state is MomentState.Saved)
+        assertEquals(SavedMomentReference("content://moment/1"), failed.reference)
+        assertEquals(0, harness.encoder.discardCalls)
+        assertTrue(harness.catalog.records.isEmpty())
+        assertTrue(harness.catalog.cleaned.isEmpty())
+
+        harness.coordinator.onStop()
+        val saved = harness.coordinator.retrySaving()
+
+        assertEquals(null, saved.failure)
+        assertEquals(MomentState.Saved(QualityTier.Proxy), saved.state)
+        assertEquals(failed.reference, saved.reference)
+        assertEquals(1, harness.encoder.encodeCalls)
+        assertEquals(1, harness.saver.saveCalls)
+        assertEquals(2, harness.catalog.insertCalls)
+        assertEquals(1, harness.encoder.discardCalls)
+        assertEquals(failed.reference, harness.catalog.records.single().reference)
+        assertEquals("staged.mp4", harness.catalog.records.single().stagingPath)
+        assertEquals(listOf(failed.reference), harness.catalog.cleaned)
+    }
+
+    @Test
+    fun abandonCannotDiscardPublishedMomentAwaitingCatalogRecovery() = runTest {
+        val harness = Harness(catalogFailures = 1)
+        val failed = harness.coordinator.captureRescue(15_000_000)
+
+        val abandoned = harness.coordinator.abandon()
+
+        assertNotNull(abandoned.failure)
+        assertEquals(failed.state, abandoned.state)
+        assertEquals(SavedMomentReference("content://moment/1"), abandoned.reference)
+        assertEquals(0, harness.encoder.discardCalls)
+        assertEquals(null, harness.coordinator.retrySaving().failure)
+        assertEquals(1, harness.saver.saveCalls)
+        assertEquals(1, harness.catalog.records.size)
+    }
+
+    @Test
+    fun stopAndRestartRetainCatalogRecoveryAndRejectAnotherRescue() = runTest {
+        val harness = Harness(catalogFailures = 1)
+        val failed = harness.coordinator.captureRescue(15_000_000)
+        harness.coordinator.onStop()
+        harness.coordinator.beginSession()
+
+        assertEquals(failed.state, harness.coordinator.state.value)
+        assertNotNull(harness.coordinator.captureRescue(30_000_000).failure)
+        assertEquals(0, harness.encoder.discardCalls)
+        val recovered = harness.coordinator.retrySaving()
+        assertEquals(null, recovered.failure)
+        assertEquals(SavedMomentReference("content://moment/1"), recovered.reference)
+        assertEquals(1, harness.encoder.encodeCalls)
+        assertEquals(1, harness.saver.saveCalls)
+        assertEquals("staged.mp4", harness.catalog.records.single().stagingPath)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun cancellingCatalogInsertRetainsPublishedIdentityForRecovery() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val harness = Harness(catalogGate = gate)
+        val capture = async { harness.coordinator.captureRescue(15_000_000) }
+        runCurrent()
+        assertEquals(1, harness.catalog.insertCalls)
+
+        capture.cancelAndJoin()
+
+        assertFalse(harness.coordinator.state.value is MomentState.Saving)
+        assertFalse(harness.coordinator.state.value is MomentState.Saved)
+        assertEquals(0, harness.encoder.discardCalls)
+        val abandoned = harness.coordinator.abandon()
+        assertNotNull(abandoned.failure)
+        assertEquals(SavedMomentReference("content://moment/1"), abandoned.reference)
+        gate.complete(Unit)
+        harness.coordinator.onStop()
+        harness.coordinator.beginSession()
+        assertEquals(null, harness.coordinator.retrySaving().failure)
+        assertEquals(1, harness.encoder.encodeCalls)
+        assertEquals(1, harness.saver.saveCalls)
+        assertEquals("staged.mp4", harness.catalog.records.single().stagingPath)
+    }
+
+    @Test
     fun secondCaptureIsRejectedWhileEncoding() = runTest {
         val gate = CompletableDeferred<Unit>()
         val started = CompletableDeferred<Unit>()
@@ -188,10 +280,12 @@ private class Harness(
     encodeGate: CompletableDeferred<Unit>? = null,
     source: FakeMomentSource = FakeMomentSource(completeCoverage),
     saveGate: CompletableDeferred<Unit>? = null,
+    catalogFailures: Int = 0,
+    catalogGate: CompletableDeferred<Unit>? = null,
 ) {
     val encoder = FakeMomentEncoder(encodeFailure, discardFailures, encodeStarted, encodeGate)
     val saver = FakeMomentSaver(saveFailures, saveGate)
-    val catalog = FakeMomentCatalog()
+    val catalog = FakeMomentCatalog(catalogFailures, catalogGate)
     val coordinator = MomentCoordinator(source, encoder, saver, catalog)
 }
 
@@ -255,11 +349,21 @@ private class FakeMomentSaver(saveFailures: Int, private val gate: CompletableDe
     }
 }
 
-private class FakeMomentCatalog : MomentCatalog {
+private class FakeMomentCatalog(
+    private var remainingFailures: Int,
+    private val gate: CompletableDeferred<Unit>?,
+) : MomentCatalog {
     val records = mutableListOf<MomentRecord>()
     val cleaned = mutableListOf<SavedMomentReference>()
+    var insertCalls = 0
     override suspend fun markStagingCleaned(reference: SavedMomentReference) { cleaned += reference }
     override suspend fun insert(record: MomentRecord) {
+        insertCalls += 1
+        gate?.await()
+        if (remainingFailures > 0) {
+            remainingFailures -= 1
+            error("catalog insert")
+        }
         records += record
     }
 }

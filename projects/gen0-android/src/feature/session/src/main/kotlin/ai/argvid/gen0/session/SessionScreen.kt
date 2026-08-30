@@ -141,6 +141,12 @@ fun SessionScreen(
             }
         }
 
+        if (state.showCatalogFailure) {
+            Button(onClick = { onAction(SessionAction.RetrySave) }, modifier = Modifier.fillMaxWidth()) {
+                Text("重试本地记录")
+            }
+        }
+
         if (state.showCleanupFailure) {
             Button(onClick = { onAction(SessionAction.RetryCleanup) }, modifier = Modifier.fillMaxWidth()) {
                 Text("重试暂存清理")

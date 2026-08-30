@@ -29,6 +29,10 @@ sealed interface MomentState {
         override val qualityTier: QualityTier? = null
     }
 
+    data object CatalogFailed : MomentState {
+        override val qualityTier: QualityTier? = null
+    }
+
     data object AssetMissing : MomentState {
         override val qualityTier: QualityTier? = null
     }

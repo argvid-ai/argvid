@@ -12,6 +12,7 @@ enum class MomentFailure {
     InsufficientCoverage,
     EncodeFailed,
     SaveFailed,
+    CatalogFailed,
     CleanupFailed,
     CaptureInProgress,
     NoPendingMoment,
@@ -49,6 +50,9 @@ class MomentCoordinator(
     suspend fun captureRescue(nowUs: Long): MomentResult = exclusive {
         if (stopped.get()) return@exclusive result(MomentFailure.Stopped)
         if (pendingCleanup != null) return@exclusive result(MomentFailure.CleanupFailed)
+        if (pendingMoment != null && savedReference != null) {
+            return@exclusive result(MomentFailure.CatalogFailed, savedReference)
+        }
         if (pendingMoment != null) return@exclusive result(MomentFailure.CaptureInProgress)
         savedReference = null
         val asset = source.ownedMomentSnapshot(nowUs, lookbackUs).ownedCopy()
@@ -77,13 +81,14 @@ class MomentCoordinator(
     }
 
     suspend fun retrySaving(): MomentResult = exclusive {
-        if (stopped.get()) return@exclusive result(MomentFailure.Stopped)
+        if (stopped.get() && savedReference == null) return@exclusive result(MomentFailure.Stopped)
         if (pendingMoment == null) return@exclusive result(MomentFailure.NoPendingMoment)
         savePendingMoment()
     }
 
     suspend fun abandon(): MomentResult = exclusive {
         val pending = pendingMoment ?: return@exclusive result(MomentFailure.NoPendingMoment)
+        if (savedReference != null) return@exclusive result(MomentFailure.CatalogFailed, savedReference)
         pendingMoment = null
         mutableState.value = MomentState.Deleted
         try {
@@ -121,7 +126,7 @@ class MomentCoordinator(
     private suspend fun savePendingMoment(): MomentResult {
         val pending = checkNotNull(pendingMoment)
         mutableState.value = MomentState.Saving(pending.qualityTier)
-        val saved = try {
+        val saved = savedReference ?: try {
             saver.save(pending)
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -130,8 +135,16 @@ class MomentCoordinator(
             return result(MomentFailure.SaveFailed)
         }
 
-        catalog.insert(pending.toRecord(saved))
         savedReference = saved
+        try {
+            catalog.insert(pending.toRecord(saved))
+        } catch (cancelled: CancellationException) {
+            mutableState.value = MomentState.CatalogFailed
+            throw cancelled
+        } catch (_: Exception) {
+            mutableState.value = MomentState.CatalogFailed
+            return result(MomentFailure.CatalogFailed, saved)
+        }
         pendingMoment = null
         mutableState.value = MomentState.Saved(pending.qualityTier)
         return try {

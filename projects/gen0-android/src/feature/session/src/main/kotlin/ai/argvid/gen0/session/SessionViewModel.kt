@@ -218,6 +218,7 @@ class SessionViewModel(
             session != SessionState.Ended &&
             session != SessionState.Paused(PauseReason.UserStop)
         val status = when {
+            moment == MomentState.CatalogFailed -> "视频已在相册；本地记录失败，请重试记录，暂存副本仍保留"
             resumeConfirmationRequired -> "会话已暂停，请确认后重新开始"
             moment is MomentState.Encoding || moment is MomentState.Saving -> "已锁定最近15秒，正在保存"
             cleanupFailed && moment is MomentState.Saved -> "已保存到相册；暂存清理失败，请重试清理或在 Today 删除"
@@ -242,11 +243,13 @@ class SessionViewModel(
             ),
             warmupRemainingUs = (RESCUE_DURATION_US - effectiveDurationUs).coerceAtLeast(0),
             rescueEnabled = rescueAvailable && session == SessionState.Running && !cleanupFailed &&
-                moment !is MomentState.Encoding && moment !is MomentState.Saving && moment != MomentState.SaveFailed,
+                moment !is MomentState.Encoding && moment !is MomentState.Saving &&
+                moment != MomentState.SaveFailed && moment != MomentState.CatalogFailed,
             stopEnabled = active && session != SessionState.Ended,
             statusText = status,
             showSaved = moment is MomentState.Saved,
             showSaveFailure = moment == MomentState.SaveFailed,
+            showCatalogFailure = moment == MomentState.CatalogFailed,
             showCleanupFailure = cleanupFailed,
             permissionRequest = permissionRequest,
             resumeConfirmationRequired = resumeConfirmationRequired,

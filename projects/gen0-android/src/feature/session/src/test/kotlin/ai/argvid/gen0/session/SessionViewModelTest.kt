@@ -250,6 +250,55 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun catalogFailureRemainsVisibleAcrossStopAndRestartUntilCatalogOnlyRetry() = runTest {
+        var publications = 0
+        var inserts = 0
+        var discards = 0
+        val moments = MomentCoordinator(
+            source = object : MomentRescueSource {
+                override suspend fun ownedMomentSnapshot(endingAtUs: Long, lookbackUs: Long) =
+                    OwnedRescueAsset(listOf(RescueFrame(0, 1, 1, byteArrayOf(1))), 0, lookbackUs, true, QualityTier.Proxy)
+            },
+            encoder = object : MomentEncoder {
+                override suspend fun encode(asset: OwnedRescueAsset) =
+                    EncodedMoment("staged.mp4", 15_000_000, 1, 1, 0, QualityTier.Proxy)
+                override suspend fun discard(moment: EncodedMoment) { discards++ }
+            },
+            saver = MomentSaver { publications++; SavedMomentReference("content://media/$publications") },
+            catalog = MomentCatalog { if (inserts++ == 0) error("catalog insert") },
+        )
+        val viewModel = SessionViewModel(FakeSessionCapture(), DomainSessionMoments(moments),
+            FakeSessionGimbal(), PermissionCoordinator(), MonotonicClock { 15_000_000 }, backgroundScope)
+        viewModel.onAction(SessionAction.Rescue)
+        runCurrent()
+        viewModel.onAction(SessionAction.ConnectGimbal)
+        assertEquals("视频已在相册；本地记录失败，请重试记录，暂存副本仍保留", viewModel.uiState.value.statusText)
+        assertTrue(viewModel.uiState.value.showCatalogFailure)
+        assertFalse(viewModel.uiState.value.showSaved)
+        assertFalse(viewModel.uiState.value.showSaveFailure)
+        assertFalse(viewModel.uiState.value.rescueEnabled)
+        viewModel.onAction(SessionAction.AbandonSave)
+        runCurrent()
+        assertEquals(0, discards)
+
+        viewModel.onAppStopped()
+        runCurrent()
+        assertEquals("视频已在相册；本地记录失败，请重试记录，暂存副本仍保留", viewModel.uiState.value.statusText)
+        viewModel.onAction(SessionAction.ConfirmResume)
+        viewModel.onPermissionResult(AppPermission.Camera, true)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.rescueEnabled)
+        viewModel.onAction(SessionAction.RetrySave)
+        runCurrent()
+        assertEquals("已保存到相册", viewModel.uiState.value.statusText)
+        assertTrue(viewModel.uiState.value.showSaved)
+        assertFalse(viewModel.uiState.value.showCatalogFailure)
+        assertEquals(1, publications)
+        assertEquals(2, inserts)
+        assertEquals(1, discards)
+    }
+
+    @Test
     fun savedCleanupFailureIsVisible() = runTest {
         val viewModel = viewModel(moments = FakeSessionMoments(failCleanup = true))
         viewModel.onAction(SessionAction.Rescue)
