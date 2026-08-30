@@ -26,7 +26,7 @@ Planes are not additional layers. See [architecture](docs/ARCHITECTURE.md) for d
 
 ## Current stage
 
-The protocol is `pre-alpha`: an unversioned stage, not a released compatibility guarantee. The repository has documented placeholders and structural gates, not active app or device implementations. [The brief](BRIEF.md) defines current priorities.
+The protocol is `pre-alpha`: an unversioned stage, not a released compatibility guarantee. The repository has documented placeholders and structural gates alongside the experimental, local-camera [Gen0 Android project](projects/gen0-android/README.md). That project does not establish a stable protocol, device implementation, or hardware safety claim. [The brief](BRIEF.md) defines current priorities.
 
 A replay-to-evidence path and a bounded gimbal simulation/host-test path are proposed initial validation slices. They must share root protocol fixtures and conformance semantics. Hardware-in-the-loop validation is pending.
 

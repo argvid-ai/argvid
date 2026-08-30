@@ -14,7 +14,7 @@ Implemented layers are L4, L1.5, L1. Media, simulated Transport, Evaluation, and
 - New protocol requirements: none. Gimbal Kotlin models are project-specific simulation types; Room JSON is database-storage metadata, not shared protocol.
 - Conformance impact: none; no root schemas or fixtures are copied or modified. Passing project tests does not imply root protocol conformance.
 - Public dependency completeness: JDK17/Android SDK36 and the pinned public Gradle/Maven components listed in THIRD_PARTY; source paths and fixture generators are present locally. No inaccessible runtime dependency is required.
-- Concrete verification entrypoints: README commands, `tests/test_storage_schema.py`, optional `tests/check_proxy_fixtures.swift`, Gradle module unit/lint/build tasks, and pending Android instrumentation.
+- Concrete verification entrypoints: README commands, `tests/test_storage_schema.py`, optional `tests/check_proxy_fixtures.swift`, Gradle module unit/lint/build tasks, the repository's pinned-action Android CI workflow, and pending Android instrumentation. The CI workflow does not turn unrun instrumentation or device checks into evidence.
 - Potentially promotable capability: deterministic simulator semantics may inform a later root RFC; no promotion or protocol acceptance occurs here.
 
 The project remains experimental. Scope approval, publication/IP permission, licensing review, and release/device acceptance are separate human decisions. Follow the specific task brief; do not import context from other projects or parent workspaces.

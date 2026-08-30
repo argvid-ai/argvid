@@ -1,0 +1,37 @@
+name: Android project checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android SDK 36 build tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Run strict Android host checks
+        run: >-
+          ./projects/gen0-android/src/gradlew -p projects/gen0-android/src
+          --no-daemon --max-workers=2 --dependency-verification=strict
+          testDebugUnitTest :core:domain:test :testing:fixtures:test lintDebug
+          :app:assembleDebug assembleDebugAndroidTest --rerun-tasks --no-build-cache
+      - name: Run project host policy checks
+        run: |
+          python3 projects/gen0-android/tests/test_storage_schema.py -v
+          python3 projects/gen0-android/tests/test_lifecycle_ownership.py -v
+          python3 projects/gen0-android/tests/test_apk_policy.py -v
+          bash projects/gen0-android/src/scripts/check-secrets.sh projects/gen0-android/src projects/gen0-android/tests projects/gen0-android/fixtures projects/gen0-android/docs projects/gen0-android/README.md projects/gen0-android/START_HERE.md projects/gen0-android/PROJECT_CONTEXT.md projects/gen0-android/BRIEF.md projects/gen0-android/architecture.md projects/gen0-android/THIRD_PARTY.md projects/gen0-android/project.yaml

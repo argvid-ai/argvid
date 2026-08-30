@@ -8,7 +8,8 @@ Argvid is a public, self-contained framework for intent-driven active photograph
 
 Choose your route in [START_HERE.md](START_HERE.md):
 
-- Read, clone, or run the existing checks: [using Argvid](docs/USING.md).
+- Read, clone, or run the root checks: [using Argvid](docs/USING.md).
+- Build the experimental local-camera project: [Gen0 Camera for Android](projects/gen0-android/README.md).
 - Modify locally or fork for your own use: [local development](docs/USING.md#local-modification).
 - Send a change upstream: [contributing](CONTRIBUTING.md). Small fixes may go directly to a PR; larger changes need confirmed scope.
 
@@ -35,7 +36,7 @@ Inclusion is based on stable interoperability contracts, reproducible reference 
 | [reference-director](reference-director/README.md) | Reproducible decision reference |
 | [adapters](adapters/README.md) | Contract-to-device translation boundaries |
 | [firmware](firmware/gen05-gimbal/README.md), [hardware](hardware/gen05-lamp/README.md) | Deterministic execution and reproducible hardware boundaries |
-| [projects](projects/README.md) | Complete public project deliveries; currently only a proposed template |
+| [projects](projects/README.md) | Complete public project deliveries, including the experimental [Gen0 Camera for Android](projects/gen0-android/README.md) and a proposed template |
 | [media](media/README.md), [bench](bench/README.md), [examples](examples/replay/README.md) | Public assets, measurements, and runnable examples when activated |
 | [context map](docs/context-map.md) | Authority and context maintenance |
 

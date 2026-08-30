@@ -4,7 +4,7 @@ Choose the amount of process that matches your goal. Reading, cloning, building,
 
 ## Read, clone, and run checks
 
-The repository is currently a pre-alpha architecture skeleton, not an installed application or a stable device API. See [README.md](../README.md) for available areas and their limitations. The root checks are runnable today; a placeholder is not an implemented feature.
+The repository is a pre-alpha framework, not a stable device API. See [README.md](../README.md) for available areas and their limitations. The root checks are runnable today; placeholders are not implemented features.
 
 Install Git, Python 3.12+, Make, and a POSIX-compatible shell. From a terminal:
 
@@ -15,6 +15,12 @@ make doctor context-check project-check test
 ```
 
 Reading public code and running these offline checks need no account or credentials. These commands are tested with macOS/POSIX tools; native Windows support is not claimed. Structure tests are not conformance, hardware validation, or safety certification. Unrun hardware-in-the-loop (HIL) checks remain pending.
+
+## Experimental local-camera project
+
+[Gen0 Camera for Android](../projects/gen0-android/README.md) is a self-contained experimental Android application with local-only capture and host verification. It does not define a canonical protocol, operate physical BLE hardware, or establish device acceptance. Follow its [project read chain](../projects/gen0-android/START_HERE.md), including the root [Agent guidance](../AGENTS.md) and [task handoff](TASK_HANDOFF.md), before changing it.
+
+Its setup, exact host commands, warnings, and pending device checks are in the project [README](../projects/gen0-android/README.md) and [verification record](../projects/gen0-android/docs/verification.md). Android instrumentation and hardware-in-the-loop checks are not run by the root command above.
 
 ## Local modification
 

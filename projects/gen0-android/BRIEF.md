@@ -6,7 +6,7 @@ Status: experimental local implementation; not a signed release or evidence of u
 
 Deliver a self-contained Android app with foreground CameraX sampling, manual proxy rescue, Room/MediaStore persistence, truthful latest-clip playback/deletion, and reproducible semantic-gimbal host tests. Preserve eight Gradle modules under `src` with no runtime service secrets. Use a distinct application sandbox and a fresh two-table local storage schema.
 
-Acceptance checks are the exact unit/lint/debug-build, instrumentation-compilation, storage-schema, fixture, and selected-file scan commands in README. Actual results and pending device checks are in [verification](docs/verification.md). Unrun device and HIL tests are pending, never passed.
+Acceptance checks are the exact unit/lint/debug-build, instrumentation-compilation, storage-schema, fixture, and selected-file scan commands in README. The repository's pinned-action Android workflow runs the strict Gradle host build on Ubuntu; actual CI results and pending device checks are in [verification](docs/verification.md). Unrun device and HIL tests are pending, never passed.
 
 ## Non-goals
 

@@ -2,7 +2,7 @@
 
 Verified 2026-08-30 on macOS with JDK17, Android SDK36/Build-Tools36.0.0 and Gradle9.3.1. This is host/build evidence only; the device matrix for the delivered revision remains pending.
 
-Linux/Ubuntu CI has not run. The generated verification metadata currently contains the macOS AAPT2 artifact (`aapt2-9.1.1-14792394-osx.jar`), not the Linux artifact. Linux integration must obtain/review the required platform artifact checksum and pass strict verification; this macOS build does not establish Linux dependency completeness.
+Linux/Ubuntu CI has not run. The generated verification metadata records both the macOS AAPT2 artifact and the Linux artifact `aapt2-9.1.1-14792394-linux.jar`, whose SHA-256 is `e7ae17af6e4093c771243e82d66462353de87befaac206bfb43e557ac1c34440` from Google's published checksum. The repository's pinned-action Android workflow is prepared to run strict verification on Ubuntu, but this macOS build does not establish Linux dependency completeness or an Ubuntu result.
 
 ## Executed checks
 

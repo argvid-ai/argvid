@@ -5,6 +5,6 @@ protocol_version: pre-alpha
 layers: [L4, L1.5, L1]
 cross_cutting_planes: [Media, Transport, Evaluation, Data Governance]
 entrypoints: [src/gradlew, src/app/src/main/kotlin/ai/argvid/gen0/MainActivity.kt, tests/test_storage_schema.py]
-verification: ["./src/gradlew -p src --no-daemon --max-workers=2 --dependency-verification=strict testDebugUnitTest :core:domain:test :testing:fixtures:test lintDebug :app:assembleDebug assembleDebugAndroidTest", "python3 tests/test_storage_schema.py -v", "python3 tests/test_lifecycle_ownership.py -v"]
+verification: ["./src/gradlew -p src --no-daemon --max-workers=2 --dependency-verification=strict testDebugUnitTest :core:domain:test :testing:fixtures:test lintDebug :app:assembleDebug assembleDebugAndroidTest", "python3 tests/test_storage_schema.py -v", "python3 tests/test_lifecycle_ownership.py -v", "python3 tests/test_apk_policy.py -v", "bash src/scripts/check-secrets.sh src tests fixtures docs README.md START_HERE.md PROJECT_CONTEXT.md BRIEF.md architecture.md THIRD_PARTY.md project.yaml"]
 fixture_policy: synthetic-only
 third_party_review: required
