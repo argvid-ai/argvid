@@ -6,7 +6,13 @@ Argvid is a public, self-contained framework for intent-driven active photograph
 
 ## Start here
 
-Begin with [START_HERE.md](START_HERE.md), then follow its context order. New Agent conversations can use the [Chinese quickstart prompt](docs/AGENT_QUICKSTART.md). Reading public code requires no account or credentials.
+Choose your route in [START_HERE.md](START_HERE.md):
+
+- Read, clone, or run the existing checks: [using Argvid](docs/USING.md).
+- Modify locally or fork for your own use: [local development](docs/USING.md#local-modification).
+- Send a change upstream: [contributing](CONTRIBUTING.md). Small fixes may go directly to a PR; larger changes need confirmed scope.
+
+Reading, building, and forking for yourself require no Ready Issue or maintainer approval. Agents modifying code still read the technical context and safety rules; use the [Chinese quickstart prompt](docs/AGENT_QUICKSTART.md). Assigned work and reports use the concise [task handoff](docs/TASK_HANDOFF.md).
 
 ```bash
 make doctor context-check project-check test

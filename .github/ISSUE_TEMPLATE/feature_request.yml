@@ -5,7 +5,7 @@ labels: ["proposal", "needs-triage"]
 body:
   - type: markdown
     attributes:
-      value: Public issues are publication. Review rights before posting. An Agent cannot grant publication/IP permission; excluded material must not be posted.
+      value: Public issues are publication. Review rights before posting. Larger features, security-sensitive changes, protocol changes, and new upstream projects need maintainer-confirmed scope via an Issue or approved public-safe task brief before implementation. Ordinary small fixes may directly prepare a PR. A contributor cannot self-authorize reserved changes; shared contracts still need root RFC review. Report vulnerabilities via SECURITY.md. An Agent cannot grant publication/IP permission; excluded material must not be posted.
   - type: textarea
     id: problem
     attributes:
@@ -29,6 +29,6 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: List observable checks and required human approvals. A proposal is not a Ready Issue or release; unrun HIL is pending.
+      description: List observable checks and required human approvals. A proposal alone is not maintainer scope confirmation or a release; unrun HIL is pending. Do not upload chats, full Agent prompts, or personnel details.
     validations:
       required: true

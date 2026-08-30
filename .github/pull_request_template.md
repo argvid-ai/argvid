@@ -1,10 +1,10 @@
 ## Outcome
 
-Describe the verifiable outcome and link the approved Ready Issue.
+Describe the verifiable outcome. For an ordinary small fix, an Issue is optional. For larger features, security-sensitive changes, protocol changes, or a new upstream project, link the maintainer-confirmed Issue or summarize the maintainer-approved public-safe task brief and approval evidence. A self-written brief is not approval; shared-contract changes still require root RFC review. Do not upload chats, full Agent prompts, or personnel details.
 
 ## Scope
 
-State non-goals, affected layers/planes, module/project paths, and source SHAs.
+State task identity/revision, non-goals, affected layers/planes, changed module/project paths, and source SHAs. A task packet cannot override accepted architecture or accept a protocol draft.
 
 ## Verification
 
@@ -35,4 +35,4 @@ Which brief, RFC, ADR, module boundary, or changelog entry changed?
 
 ## Handoff
 
-Interface identity, device/firmware/build versions where applicable, setup, evidence, remaining issue, and next step. Unrun HIL remains pending; temporary integration branches are not releases.
+Use the completion-report fields in docs/TASK_HANDOFF.md: task/source revision, changed paths, tests/evidence, not-run checks, local/remote Git state and PR link, interface compatibility, blockers, next action, and required decision. Include setup and device/firmware/build versions where applicable. Mark unknown remote state as not checked, not as pushed or merged. Keep recipient-specific reports outside the repository. Unrun HIL remains pending; temporary integration branches are not releases.

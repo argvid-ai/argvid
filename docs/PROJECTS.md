@@ -4,9 +4,9 @@ A project is a complete public delivery, not necessarily a reference. It must sa
 
 ## Activation and required files
 
-Copy [the template](../projects/_template/README.md) to an immediate `projects/<project-id>/` directory only through an approved Ready Issue. Use a lower-case hyphenated identifier matching the directory. Read and update README, PROJECT_CONTEXT, BRIEF, project.yaml, architecture.md, THIRD_PARTY.md, and the src/tests/fixtures/docs READMEs.
+For a new upstream project, obtain maintainer-confirmed scope through an Issue or a maintainer-approved public-safe task brief before copying [the template](../projects/_template/README.md) to an immediate `projects/<project-id>/` directory. An external contributor cannot self-authorize activation with a self-written brief. Reading, building, local modification, or copying a template for personal experimentation needs no upstream approval, but does not activate an accepted upstream project. Use a lower-case hyphenated identifier matching the directory. Read and update README, PROJECT_CONTEXT, BRIEF, project.yaml, architecture.md, THIRD_PARTY.md, and the src/tests/fixtures/docs READMEs.
 
-The README explains public purpose, setup, existing entrypoints, verification commands, limitations, and activation authority. A documentation-only project may use README.md as an entrypoint if its public delivery and checks are explicit. All projects require nonempty implemented layers and entrypoints.
+The README explains public purpose, setup, existing entrypoints, verification commands, limitations, and activation authority. Keep public-safe scope and maintainer confirmation reviewable without uploading chats or full Agent prompts; off-platform assignment does not authorize importing confidential context. A documentation-only project may use README.md as an entrypoint if its public delivery and checks are explicit. All projects require nonempty implemented layers and entrypoints. Use [task handoff](TASK_HANDOFF.md) for brief/report fields; recipient-specific reports stay outside the repository.
 
 ## Manifest syntax
 
@@ -35,7 +35,7 @@ The template's exact defaults are example-project, proposed, Apache-2.0, pre-alp
 
 architecture.md uses one table row per exact canonical layer name and per plane, with columns Area, Status, Rationale. Status is `implemented` (delivered here), `reused` (public dependency with named identity/path), or `not-applicable` (explained omission). List only implemented layers/planes in the manifest; table and manifest must agree. Include nonblank rationale for every row. All six layers and four planes remain explicit, even when L3 is not applicable.
 
-Use root [protocol](../protocol/README.md), [versioning](../protocol/VERSIONING.md), and [conformance](../conformance/README.md). A project may propose a protocol change via root RFCs and fixtures; it may not copy `protocol/schema` at any depth.
+Use root [protocol](../protocol/README.md), [versioning](../protocol/VERSIONING.md), and [conformance](../conformance/README.md). A project may propose a protocol change via root RFCs and fixtures; it may not copy `protocol/schema` at any depth. A task brief cannot override accepted architecture or accept a protocol draft. Scope approval does not waive root RFC, safety, licensing, or publication review; missing required authority stops work.
 
 An architecture layer does not by itself choose a root or project path. Project-specific L4, L3, L1.5, L1, and L0 implementations may live in `projects/<project-id>/src` with an explicit layer mapping. Put only reusable shared implementations in the corresponding root modules. Canonical L2 schemas stay in root `protocol`; RFC documents belong in `docs/rfcs`, accepted ADRs in `docs/decisions`, and reusable conformance tests in root `conformance`. Never duplicate root protocol.
 

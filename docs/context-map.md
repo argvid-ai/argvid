@@ -2,19 +2,19 @@
 
 ## Required context order
 
-START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → RFC/ADR/Ready Issue
+START_HERE.md → AGENTS.md → PROJECT_CONTEXT.md → docs/ARCHITECTURE.md → BRIEF.md → nearest module/project context → applicable RFC/ADR → task scope (Issue or task brief)
 
-The root chain establishes public scope and architecture before task details. Module context means its README and any local AGENTS. Project context means README, PROJECT_CONTEXT, BRIEF, project.yaml, architecture.md, THIRD_PARTY.md, and relevant docs. Re-read affected authority after a context change.
+The root chain establishes public scope and architecture before task details. Module context means its README and any local AGENTS. Project context means README, PROJECT_CONTEXT, BRIEF, project.yaml, architecture.md, THIRD_PARTY.md, and relevant docs. Re-read affected authority after a context change. Local work and ordinary small fixes may use a concise task description without an Issue. Reserved upstream changes require maintainer-confirmed scope through an Issue or maintainer-approved public-safe task brief, as defined in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Truth priority
 
 1. Accepted architecture decisions, current shared contracts, fixtures, and conformance tests (released identities when available).
 2. Current architecture and repository scope.
 3. Current root and project briefs.
-4. Approved Ready Issue with acceptance criteria and reviewed RFC.
+4. Task scope with acceptance criteria and required maintainer confirmation (Issue or public-safe task brief).
 5. Discussion or Agent memory.
 
-An unresolved conflict stops implementation; a lower-priority summary cannot override a contract or safety boundary. No released schema exists yet.
+An unresolved conflict stops implementation; a lower-priority summary or off-platform task packet cannot override accepted architecture, a contract, or a safety boundary. Missing authority for reserved changes stops work; a contributor cannot self-authorize it. Draft RFCs remain proposals, not accepted protocol. No released schema exists yet.
 
 ## Update map
 
@@ -29,7 +29,7 @@ An unresolved conflict stops implementation; a lower-priority summary cannot ove
 
 ## Offline context gate and link syntax
 
-`tools/context-check` takes no arguments and checks the repository containing the script, not the caller's working directory. It returns 0 on success, 1 on invalid context. It checks required files, the exact read chain, canonical layer/plane mappings, placement outcomes, handshake fields, and existing local Markdown link targets contained in this repository.
+`tools/context-check` takes no arguments and checks the repository containing the script, not the caller's working directory. It returns 0 on success, 1 on invalid context. It checks required files (including [USING.md](USING.md) and [TASK_HANDOFF.md](TASK_HANDOFF.md)), the exact read chain, canonical layer/plane mappings, placement outcomes, handshake fields, and existing local Markdown link targets contained in this repository. It does not determine whether a task was actually approved.
 
 Supported navigation syntax is an inline Markdown link or image with a simple relative destination and optional fragment, for example `[context](context-map.md#truth-priority)`. Fragments are not validated. HTTPS/HTTP/mailto targets are not fetched or checked. Fenced code and inline-code examples are ignored.
 

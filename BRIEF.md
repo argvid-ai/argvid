@@ -25,7 +25,7 @@ Make the public repository understandable, independently checkable, and ready fo
 - [x] Provide a proposed project template and offline context/project gates.
 - [ ] Accept the first contract RFC with valid/invalid synthetic fixtures.
 - [ ] Implement a conformance runner against approved contracts.
-- [ ] Activate replay and simulation/host-test work through approved Ready Issues.
+- [ ] Activate replay and simulation/host-test work through maintainer-confirmed scope via Issues or approved public-safe task briefs, with documented start conditions met.
 
 ## Pending, not claimed
 
@@ -33,4 +33,4 @@ No stable public API or released protocol compatibility; no implemented app/devi
 
 ## Handoff
 
-The next Ready Issue should bound a public contract proposal and synthetic acceptance cases. The template alone grants no implementation, publication, or release permission.
+The next contract task should bound a public proposal and synthetic acceptance cases through maintainer-confirmed scope via an Issue or approved public-safe task brief; root RFC review still governs acceptance. The template alone grants no upstream implementation, publication, or release permission.
