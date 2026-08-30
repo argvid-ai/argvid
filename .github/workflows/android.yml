@@ -23,6 +23,10 @@ jobs:
       - name: Install Android SDK 36 build tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Install ripgrep for selected file scan
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
       - name: Run strict Android host checks
         run: >-
           ./projects/gen0-android/src/gradlew -p projects/gen0-android/src
