@@ -26,7 +26,7 @@ This RFC defines service discovery, capability negotiation, setpoints, operating
 | State | `8E400005-F315-4F60-9FB8-838830DAEA50` | notify |
 | EStop | `8E400006-F315-4F60-9FB8-838830DAEA50` | write with response |
 
-All multi-byte integers are little-endian. Signed values use two's complement. Reserved bits and bytes must be zero when sent and ignored when received unless a later compatible revision assigns them.
+All multi-byte integers are little-endian. Signed values use two's complement. Reserved bits and bytes must be zero when sent and ignored when received unless a later compatible revision assigns them. Field-specific receiver requirements take precedence over this generic ignore rule: receivers reject nonzero Setpoint.flags and unknown Capability.axis_flags or Capability.capability_flags bits.
 
 ## Packet layouts
 
