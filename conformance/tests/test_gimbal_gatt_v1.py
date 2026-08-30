@@ -19,9 +19,11 @@ def load_hex(relative_path: str) -> bytes:
 def validate_setpoint(payload: bytes, *, received_after_ms: int = 0) -> str | None:
     if len(payload) != 16:
         return "INVALID_LENGTH"
-    version, _, _, _, _, _, deadline_ms, _ = struct.unpack("<BBHhhHHI", payload)
+    version, flags, _, _, _, _, deadline_ms, _ = struct.unpack("<BBHhhHHI", payload)
     if version != 1:
         return "UNSUPPORTED_VERSION"
+    if flags != 0:
+        return "UNSUPPORTED_FLAGS"
     if received_after_ms > deadline_ms:
         return "DEADLINE_EXPIRED"
     return None
@@ -80,6 +82,11 @@ class GimbalGattV1ConformanceTests(unittest.TestCase):
 
     def test_unknown_version_is_rejected(self) -> None:
         self.assertEqual("UNSUPPORTED_VERSION", validate_setpoint(load_hex("invalid/unknown-version.hex")))
+
+    def test_setpoint_rejects_nonzero_reserved_flags(self) -> None:
+        payload = bytearray(load_hex("valid/manual-setpoint.hex"))
+        payload[1] = 1
+        self.assertEqual("UNSUPPORTED_FLAGS", validate_setpoint(bytes(payload)))
 
     def test_expired_deadline_is_rejected_separately_from_decoding(self) -> None:
         case = json.loads((FIXTURES / "invalid" / "expired-deadline.json").read_text(encoding="utf-8"))
