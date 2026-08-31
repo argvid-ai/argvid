@@ -1,0 +1,10 @@
+project_id: gen0-gimbal
+status: proposed - delivered for maintainer review - not accepted
+license: Apache-2.0
+protocol_version: pre-alpha
+layers: [L4, L1.5, L1, L0]
+cross_cutting_planes: [Transport, Evaluation, Data Governance]
+entrypoints: [src/firmware/esp32-firmware.ino, src/app/lib/main.dart, src/tools/web_app.py]
+verification: [flutter test, python -m py_compile src/tools/f32c_protocol.py src/tools/test_cli.py src/tools/web_app.py]
+fixture_policy: synthetic-only
+third_party_review: required
