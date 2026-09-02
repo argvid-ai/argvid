@@ -25,12 +25,12 @@ This project delivers a complete public driver/control boundary for a 2-axis fix
 
 ## Setup and verification
 
-All paths below are relative to `projects/gen0-gimbal/`. CI runs the same checks from the repository root via `.github/workflows/gimbal.yml` (firmware compile with the pinned PlatformIO toolchain, Flutter unit tests, Python module compile).
+All paths below are relative to `projects/gen0-gimbal/`. CI runs the same checks from the repository root via `.github/workflows/gimbal.yml` (firmware compile with the pinned Arduino toolchain, Flutter unit tests, Python module compile).
 
-Firmware, two supported routes:
+Firmware, two supported routes (both pinned to esp32 core 3.3.11 + ArduinoJson 7.4.3):
 
-- PlatformIO (reproducible compile check; toolchain pinned to espressif32 7.0.1 = Arduino core 2.0.17, ArduinoJson 7.x): from `projects/gen0-gimbal/` run `pio run -d src/firmware`; exit 0 means the firmware compiles.
-- Arduino IDE: install the ESP32 board package (2.0.x) and ArduinoJson 7.x, open `src/firmware/esp32-firmware.ino`, select ESP32S3 Dev Module with USB CDC On Boot enabled, compile and upload, then watch the serial monitor at 115200 for the ready banner.
+- Arduino CLI (reproducible compile check; arduino-cli 1.5.1): from `projects/gen0-gimbal/` run `arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc src/firmware/esp32-firmware`; exit 0 means the firmware compiles. First run needs the core and library installed: `arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json`, `arduino-cli core update-index`, `arduino-cli core install esp32:esp32@3.3.11`, `arduino-cli lib install ArduinoJson@7.4.3`.
+- Arduino IDE (2.x, bundled arduino-cli 1.5.1): install the ESP32 board package 3.3.11 and ArduinoJson 7.4.3, open `src/firmware/esp32-firmware/esp32-firmware.ino`, select ESP32S3 Dev Module with USB CDC On Boot enabled, compile and upload, then watch the serial monitor at 115200 for the ready banner.
 
 App: requires the Flutter stable SDK. From `projects/gen0-gimbal/src/app` run `flutter pub get` then `flutter test`; all unit tests must pass. The suites cover app control behavior (jog command emission, 130 ms move throttling with final-position send on release, pan plus/minus 180 / tilt plus/minus 90 clamping, 0.1-degree rounding) plus model and log-formatting logic; they do not exercise BLE transport or firmware execution on hardware (see [tests/README.md](tests/README.md)). Platform folders are regenerated with `flutter create . --project-name gimbal_app` and are intentionally not committed.
 

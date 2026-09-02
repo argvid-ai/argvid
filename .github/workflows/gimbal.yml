@@ -10,16 +10,27 @@ permissions:
 
 jobs:
   firmware:
-    name: Firmware compile (PlatformIO, pinned toolchain)
+    name: Firmware compile (arduino-cli 1.5.1, esp32 core 3.3.11)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install PlatformIO
-        run: python3 -m pip install --upgrade platformio
-      - name: Compile ESP32-S3 firmware (espressif32 7.0.1 / Arduino core 2.0.17)
-        run: pio run -d projects/gen0-gimbal/src/firmware
+      - name: Install arduino-cli 1.5.1 (pinned)
+        run: |
+          curl -fsSL -o /tmp/arduino-cli.tar.gz https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Linux_64bit.tar.gz
+          sudo tar -xzf /tmp/arduino-cli.tar.gz -C /usr/local/bin arduino-cli
+          arduino-cli version
+      - name: Install esp32 core 3.3.11 and ArduinoJson 7.4.3 (pinned)
+        run: |
+          arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.11
+          arduino-cli lib install ArduinoJson@7.4.3
+      - name: Compile ESP32-S3 firmware
+        run: >-
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc
+          projects/gen0-gimbal/src/firmware/esp32-firmware
 
   app:
     name: Flutter app unit tests
