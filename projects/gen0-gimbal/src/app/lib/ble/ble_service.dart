@@ -8,6 +8,7 @@ import '../models/gimbal_state.dart';
 import '../models/motor.dart';
 import '../utils/log_formatter.dart';
 import 'ble_uuids.dart';
+import 'command_sink.dart';
 
 /// BLE 连接状态
 enum BleConnState { disconnected, connecting, connected, discovering }
@@ -17,7 +18,7 @@ enum BleConnState { disconnected, connecting, connected, discovering }
 /// 所有 ESP32 → APP 的事件（cmd_result / scan_result / query_result / log /
 /// error / gimbal_state / wifi_status / sys_status）都在这里解析并更新状态，
 /// 页面通过 provider 监听刷新。
-class BleService extends ChangeNotifier {
+class BleService extends ChangeNotifier implements CommandSink {
   // ---------------- 对外状态 ----------------
   BleConnState connState = BleConnState.disconnected;
   String statusMsg = '';

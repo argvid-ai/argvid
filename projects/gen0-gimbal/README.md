@@ -25,11 +25,16 @@ This project delivers a complete public driver/control boundary for a 2-axis fix
 
 ## Setup and verification
 
-Firmware: Arduino IDE with the ESP32 board package and ArduinoJson 7.x; open `src/firmware/esp32-firmware.ino`, select ESP32S3 Dev Module with USB CDC On Boot enabled, compile and upload, then watch the serial monitor at 115200 for the ready banner.
+All paths below are relative to `projects/gen0-gimbal/`. CI runs the same checks from the repository root via `.github/workflows/gimbal.yml` (firmware compile with the pinned PlatformIO toolchain, Flutter unit tests, Python module compile).
 
-App: requires the Flutter SDK. From `src/app` run `flutter pub get` then `flutter test` on a host with the SDK; `flutter test` must pass with no failures. Platform folders are regenerated with `flutter create . --project-name gimbal_app` and are intentionally not committed.
+Firmware, two supported routes:
 
-Tools: requires Python 3.12+ and `pip install -r src/tools/requirements.txt`. From the repository root run `python -m py_compile src/tools/f32c_protocol.py src/tools/test_cli.py src/tools/web_app.py`; exit status 0 with no output means all three modules compile. The web console is started with `python src/tools/web_app.py` and served at http://127.0.0.1:5000.
+- PlatformIO (reproducible compile check; toolchain pinned to espressif32 7.0.1 = Arduino core 2.0.17, ArduinoJson 7.x): from `projects/gen0-gimbal/` run `pio run -d src/firmware`; exit 0 means the firmware compiles.
+- Arduino IDE: install the ESP32 board package (2.0.x) and ArduinoJson 7.x, open `src/firmware/esp32-firmware.ino`, select ESP32S3 Dev Module with USB CDC On Boot enabled, compile and upload, then watch the serial monitor at 115200 for the ready banner.
+
+App: requires the Flutter stable SDK. From `projects/gen0-gimbal/src/app` run `flutter pub get` then `flutter test`; all unit tests must pass. The suites cover app control behavior (jog command emission, 130 ms move throttling with final-position send on release, pan plus/minus 180 / tilt plus/minus 90 clamping, 0.1-degree rounding) plus model and log-formatting logic; they do not exercise BLE transport or firmware execution on hardware (see [tests/README.md](tests/README.md)). Platform folders are regenerated with `flutter create . --project-name gimbal_app` and are intentionally not committed.
+
+Tools: requires Python 3.12+ and `pip install -r src/tools/requirements.txt`. From `projects/gen0-gimbal/` run `python -m py_compile src/tools/f32c_protocol.py src/tools/test_cli.py src/tools/web_app.py`; exit status 0 with no output means all three modules compile. The web console is started with `python src/tools/web_app.py` and served at http://127.0.0.1:5000.
 
 Not run in this delivery: real-device firmware flash, BLE end-to-end integration, and hardware-in-the-loop gimbal motion tests; all remain pending.
 

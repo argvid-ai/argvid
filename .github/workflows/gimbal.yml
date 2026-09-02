@@ -1,0 +1,55 @@
+name: Gimbal project checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    name: Firmware compile (PlatformIO, pinned toolchain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install PlatformIO
+        run: python3 -m pip install --upgrade platformio
+      - name: Compile ESP32-S3 firmware (espressif32 7.0.1 / Arduino core 2.0.17)
+        run: pio run -d projects/gen0-gimbal/src/firmware
+
+  app:
+    name: Flutter app unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Flutter SDK (stable)
+        run: |
+          git clone --depth 1 -b stable https://github.com/flutter/flutter.git "$HOME/flutter"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+      - name: Run app unit tests
+        run: |
+          cd projects/gen0-gimbal/src/app
+          flutter --version
+          flutter pub get
+          flutter test
+
+  tools:
+    name: Python tools and project manifest checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compile Python tool modules
+        run: >-
+          python3 -m py_compile projects/gen0-gimbal/src/tools/f32c_protocol.py
+          projects/gen0-gimbal/src/tools/test_cli.py
+          projects/gen0-gimbal/src/tools/web_app.py
+      - name: Run project manifest check
+        run: python3 tools/project-check projects/gen0-gimbal

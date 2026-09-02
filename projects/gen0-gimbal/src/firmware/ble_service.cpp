@@ -73,7 +73,8 @@ void BleServiceManager::begin(const char* deviceName) {
         BLE_CHAR_STATUS, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     _charStatus->addDescriptor(new BLE2902());
     _charStatus->setCallbacks(new StatusReadCallbacks());
-    _charStatus->setValue(_statusReadValue);   // setValue(const String&)
+    // core 2.x：BLECharacteristic::setValue 无 Arduino String 重载，转 std::string
+    _charStatus->setValue(std::string(_statusReadValue.c_str()));
 
     // FF03 电机命令（Write）
     _charCmd = service->createCharacteristic(
