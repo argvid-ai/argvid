@@ -8,6 +8,7 @@
  */
 #pragma once
 #include <Arduino.h>
+#include <atomic>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -40,6 +41,14 @@ public:
     bool popCommand(BleCmdMsg& msg);
     size_t pendingCommands() const;
 
+    // P1-1：断连事件（蓝牙栈回调置位，主循环消费后执行失联停机）
+    bool takeDisconnectEvent();
+
+    // P1-2：松手停止旁路（蓝牙栈回调置位原子标志，队列满也不丢失；
+    //       同时清空队列中残留的旧运动命令，保证停止之后不再执行它们）
+    void requestStop(bool pan, bool tilt);
+    bool takeStopRequest(bool& pan, bool& tilt);
+
     // 内部使用（供 Write 回调入队）
     void _queueCmdPublic(bool isWifi, const String& json);
 
@@ -54,6 +63,9 @@ private:
     bool _connected = false;
     ConnectCallback _connectCb = nullptr;
     String _statusReadValue = "{}";
+
+    std::atomic<bool>    _disconnectPending{false};  // P1-1 断连待处理标志
+    std::atomic<uint8_t> _stopFlags{0};              // P1-2 bit0=pan, bit1=tilt
 
     void _queueCmd(bool isWifi, const String& json);
 };

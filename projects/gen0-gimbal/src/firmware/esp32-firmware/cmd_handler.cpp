@@ -17,6 +17,27 @@ void CmdHandler::begin(F32CMotor* motor, GimbalController* gimbal,
 
 // ==================== 命令队列处理 ====================
 void CmdHandler::processQueue() {
+    // P1-1：BLE 断连事件 → 主任务执行失联停机（串口阻塞在此安全）
+    if (_ble->takeDisconnectEvent()) {
+        _handleDisconnect();
+    }
+
+    // P1-2：停止旁路优先于队列消费（队列满时停止也不丢）
+    bool stopPan, stopTilt;
+    if (_ble->takeStopRequest(stopPan, stopTilt)) {
+        if (stopPan)  _gimbal->jog("pan", 0, 0);
+        if (stopTilt) _gimbal->jog("tilt", 0, 0);
+        flushLogs();
+    }
+
+    // P1-1：未连接时不再消费任何电机/WiFi 命令
+    //（残留队列已在断连回调中清空，此处为兜底防御）
+    if (!_ble->isConnected()) {
+        BleCmdMsg drop;
+        while (_ble->popCommand(drop)) {}
+        return;
+    }
+
     BleCmdMsg msg;
     while (_ble->popCommand(msg)) {
         if (msg.isWifi) {
@@ -27,6 +48,15 @@ void CmdHandler::processQueue() {
         // 每处理一条命令顺带 flush 一次日志，保证准实时
         flushLogs();
     }
+}
+
+// ==================== 失联停机（P1-1） ====================
+void CmdHandler::_handleDisconnect() {
+    // 云台就绪则双轴强制速度模式 0 RPM（保持力矩锁定，防止断连瞬间
+    // 残留的 jog 继续驱动电机）。停机机制需真机 HIL 验证。
+    MotorResponse r = _gimbal->emergencyStop();
+    _notifyError(String("BLE 已断开：") + r.parsed_text);
+    flushLogs();
 }
 
 // ==================== 电机/云台命令路由（FF03） ====================
@@ -71,10 +101,16 @@ void CmdHandler::_handleMotorCmd(const String& json) {
     }
     if (cmdStr == "jog") {
         const char* axis = doc["axis"] | "";
+        String axisStr = axis;
+        // P1-3：未知轴显式拒绝（此前任意值都被当作 tilt 执行）
+        if (axisStr != "pan" && axisStr != "tilt") {
+            _notifyResult(false, "未知轴 \"" + axisStr + "\"：仅支持 pan/tilt");
+            return;
+        }
         int dir = doc["dir"] | 0;
         int speed = doc["speed"] | 60;
-        MotorResponse r = _gimbal->jog(String(axis), (int8_t)dir, (uint16_t)speed);
-        String msg = String(axis) + " ";
+        MotorResponse r = _gimbal->jog(axisStr, (int8_t)dir, (uint16_t)speed);
+        String msg = axisStr + " ";
         msg += (dir == 0 ? "停止" : (dir > 0 ? "正转 " : "反转 "));
         if (dir != 0) msg += String(speed) + " RPM";
         msg += r.valid ? "" : (" -> " + r.parsed_text);
@@ -109,19 +145,36 @@ void CmdHandler::_handleMotorCmd(const String& json) {
     MotorResponse r;
 
     if (cmdStr == "enable")         { r = _motor->enable(); }
-    else if (cmdStr == "disable")   { r = _motor->disable(); }
+    else if (cmdStr == "disable") {
+        r = _motor->disable();
+        // P1-5：失能后云台轴模式缓存失效（下次 jog/move 重新 setMode+enable）
+        if (r.valid) _gimbal->invalidateAxis(addr);
+    }
     else if (cmdStr == "set_mode")  {
         int mode = doc["mode"] | -1;
         if (mode < 0 || mode > 4) { _notifyResult(false, "模式必须在 0~4 范围"); return; }
         r = _motor->setMode((uint8_t)mode);
+        // P1-5：外部改模式后云台轴缓存失效
+        if (r.valid) _gimbal->invalidateAxis(addr);
     }
-    else if (cmdStr == "set_speed") { r = _motor->setSpeed((int16_t)(doc["rpm"] | 0)); }
+    else if (cmdStr == "set_speed") {
+        // P1-3：单电机速度命令加上限（与 jog 一致 ±300 RPM，防爆转）
+        int rpm = doc["rpm"] | 0;
+        if (rpm > 300 || rpm < -300) { _notifyResult(false, "速度必须在 ±300 RPM 范围"); return; }
+        r = _motor->setSpeed((int16_t)rpm);
+    }
     else if (cmdStr == "set_angle") {
         float angle = doc["angle"] | 0.0f;
+        // P1-3：云台限位轴（tilt）的目标角必须过限位检查（显式拒绝，不静默裁剪）
+        const char* deny = _gimbal->checkAngleLimit(addr, angle, false);
+        if (deny) { _notifyResult(false, String(deny)); return; }
         r = _motor->setSingleAngle(angle);
     }
     else if (cmdStr == "set_multi_angle") {
         float angle = doc["angle"] | 0.0f;
+        // P1-3：限位轴拒绝多圈命令（圈数基准不受 ±90° 保护）
+        const char* deny = _gimbal->checkAngleLimit(addr, angle, true);
+        if (deny) { _notifyResult(false, String(deny)); return; }
         r = _motor->setMultiAngle(angle);
     }
     else if (cmdStr == "set_accel") { r = _motor->setAccel((uint16_t)(doc["accel"] | 0)); }
@@ -149,12 +202,18 @@ void CmdHandler::_handleMotorCmd(const String& json) {
     else if (cmdStr == "save")           { r = _motor->saveParams(); }
     else if (cmdStr == "clear_total")    { r = _motor->clearTotalAngle(); }
     else if (cmdStr == "set_zero")       { r = _motor->setSingleZero(); }
-    else if (cmdStr == "factory_reset")  { r = _motor->factoryReset(); }
+    else if (cmdStr == "factory_reset") {
+        r = _motor->factoryReset();
+        // P1-5：恢复出厂会重置模式与使能，云台轴缓存失效
+        if (r.valid) _gimbal->invalidateAxis(addr);
+    }
     else if (cmdStr == "setaddr") {
         uint8_t newAddr = doc["new_addr"] | 0;
         r = _motor->setDeviceAddress(newAddr);
         if (r.valid) {
             _motor->setAddr(newAddr);   // 发送成功后切换控制地址（与 Python 一致）
+            // P1-5：原地址轴缓存失效（该电机地址已变）
+            _gimbal->invalidateAxis(addr);
             _notifyResult(true, "地址已改为 " + String(newAddr) + "，建议再发 save 命令永久写入");
             return;
         }

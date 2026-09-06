@@ -36,6 +36,19 @@ public:
     // 双轴当前位置设为单圈 0°（需再 saveParams 才掉电保存）
     MotorResponse zero();
 
+    // P1-1 失联停机（fail-safe）：双轴强制速度模式 + 0 RPM（保持力矩锁定）。
+    // 只能在主任务调用（内部有串口阻塞）。停机机制的正确性需真机 HIL 验证。
+    MotorResponse emergencyStop();
+
+    // P1-5 模式缓存失效：外部（电机控制台）对某电机 set_mode/disable/
+    // factory_reset/setaddr 成功后调用；addr 命中云台轴时使该轴缓存失效
+    void invalidateAxis(uint8_t addr);
+
+    // P1-3 云台轴角度限位检查：返回 nullptr=允许；非空=拒绝原因。
+    // tilt 轴（限位 ±90°）：单圈目标角折算 ±180 表示法校验；多圈命令直接拒绝。
+    // pan 轴 ±180° 覆盖全单圈范围、非云台轴不受限。
+    const char* checkAngleLimit(uint8_t addr, float angle, bool multiTurn) const;
+
     // 状态 JSON：{"event":"gimbal_state","pan":2,"tilt":3,"pan_angle":30.0,"tilt_angle":-45.0}
     String stateJson();
 

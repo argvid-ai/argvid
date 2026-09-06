@@ -224,7 +224,8 @@ class F32CMotor:
 
         # 地址
         if raw[1] != self.addr:
-            return MotorResponse(raw, True, True, 0, 0,
+            # 地址不匹配视为失败（P1-4 修复：总线串扰/他机回包不得标记为成功）
+            return MotorResponse(raw, False, True, 0, 0,
                                  f"地址不匹配 期望 {self.addr:02X} 实际 {raw[1]:02X}")
 
         # 反馈类型 + 数据

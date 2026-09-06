@@ -51,16 +51,20 @@ jobs:
           flutter test
 
   tools:
-    name: Python tools and project manifest checks
+    name: Python tools, unit tests, and project manifest checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools dependencies
+        run: python3 -m pip install -r projects/gen0-gimbal/src/tools/requirements.txt
       - name: Compile Python tool modules
         run: >-
           python3 -m py_compile projects/gen0-gimbal/src/tools/f32c_protocol.py
           projects/gen0-gimbal/src/tools/test_cli.py
           projects/gen0-gimbal/src/tools/web_app.py
+      - name: Run Python unit tests (protocol address check, web auth/concurrency)
+        run: python3 -m unittest discover -s projects/gen0-gimbal/tests -v
       - name: Run project manifest check
         run: python3 tools/project-check projects/gen0-gimbal

@@ -12,6 +12,12 @@ This project delivers a complete public driver/control boundary for a 2-axis fix
 
 - The BLE JSON command boundary and the F32C wire protocol are project-local device interfaces, not canonical L2 semantics. A shared-contract proposal would go through root RFC review.
 - L0 behavior lives in firmware: tilt is clamped to plus/minus 90 degrees, pan to plus/minus 180 degrees at the control layer, commands are disabled when the BLE link drops, and the ESP32 task watchdog remains enabled. Model output or app logic never bypasses these limits.
+- Fail-safe on BLE disconnect (review fix P1-1): the disconnect callback drops all queued commands and sets an atomic event; the main loop then forces both axes into speed mode at 0 RPM (holding torque, chosen over `disable` to keep the vertical axis from sagging under gravity). This stop mechanism still requires hardware-in-the-loop verification.
+- Stop-command bypass (P1-2): joystick-release stops (`jog` with `dir=0`) are routed through atomic flags instead of the command queue, so a full queue can never drop a stop, and queued stale motion commands are flushed when a stop arrives.
+- Single-motor console commands honor the gimbal limits (P1-3): out-of-range tilt angles and multi-turn commands on the tilt axis are explicitly rejected, speeds are capped at plus/minus 300 RPM, and unknown jog axes are rejected instead of silently treated as tilt. Motor-console position feedback limiting during jog (e.g. refusing further same-direction jog past a hardware limit) requires real-device behavior and remains pending.
+- Protocol responses with a mismatched address are treated as failures (P1-4) in both the C++ firmware and the Python reference implementation, with deterministic host regression tests.
+- Mode cache is written only after a successful mode switch, and external `set_mode`/`disable`/`factory_reset`/`setaddr` on a gimbal axis invalidates the cache (P1-5), so stale-mode false successes cannot occur.
+- The Python web console is localhost-only by default and requires a per-launch random token on every `/api/*` call (P1-7); serial transactions (`set_addr` + command) are serialized by a lock (P1-6) so concurrent requests cannot produce wrong-axis frames.
 - Unrun hardware-in-the-loop checks are pending, not passed. Automated host tests do not certify hardware safety.
 
 ## Layout
@@ -34,7 +40,7 @@ Firmware, two supported routes (both pinned to esp32 core 3.3.11 + ArduinoJson 7
 
 App: requires the Flutter stable SDK. From `projects/gen0-gimbal/src/app` run `flutter pub get` then `flutter test`; all unit tests must pass. The suites cover app control behavior (jog command emission, 130 ms move throttling with final-position send on release, pan plus/minus 180 / tilt plus/minus 90 clamping, 0.1-degree rounding) plus model and log-formatting logic; they do not exercise BLE transport or firmware execution on hardware (see [tests/README.md](tests/README.md)). Platform folders are regenerated with `flutter create . --project-name gimbal_app` and are intentionally not committed.
 
-Tools: requires Python 3.12+ and `pip install -r src/tools/requirements.txt`. From `projects/gen0-gimbal/` run `python -m py_compile src/tools/f32c_protocol.py src/tools/test_cli.py src/tools/web_app.py`; exit status 0 with no output means all three modules compile. The web console is started with `python src/tools/web_app.py` and served at http://127.0.0.1:5000.
+Tools: requires Python 3.12+ and `pip install -r src/tools/requirements.txt`. From `projects/gen0-gimbal/` run `python -m py_compile src/tools/f32c_protocol.py src/tools/test_cli.py src/tools/web_app.py`; exit status 0 with no output means all three modules compile. Run the Python unit tests with `python -m unittest discover -s tests -v` (protocol address check, web auth and concurrency; 13 tests must pass). The web console is started with `python src/tools/web_app.py` and served at http://127.0.0.1:5000 with a per-launch token printed on startup.
 
 Not run in this delivery: real-device firmware flash, BLE end-to-end integration, and hardware-in-the-loop gimbal motion tests; all remain pending.
 

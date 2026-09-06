@@ -96,13 +96,31 @@ void BleServiceManager::begin(const char* deviceName) {
     BLEDevice::startAdvertising();
 }
 
+// P1-2：轻量停止命令检测（不解析 JSON，避免在蓝牙栈任务做重活）
+// 本仓库 App 用 jsonEncode 生成（键值无空格）；同时容忍手写 JSON 的带空格形式。
+static bool _isJogStop(const String& json) {
+    bool isJog = json.indexOf("\"cmd\":\"jog\"") >= 0 || json.indexOf("\"cmd\": \"jog\"") >= 0;
+    if (!isJog) return false;
+    return json.indexOf("\"dir\":0") >= 0 || json.indexOf("\"dir\": 0") >= 0;
+}
+
 void BleServiceManager::_queueCmd(bool isWifi, const String& json) {
     if (!s_cmdQueue) return;
+
+    // P1-2：松手停止走原子标志旁路——队列满也不会丢失；同时清空队列中
+    // 残留的旧运动命令，保证停止之后不会继续执行它们。
+    if (!isWifi && _isJogStop(json)) {
+        bool pan  = json.indexOf("\"axis\":\"pan\"")  >= 0 || json.indexOf("\"axis\": \"pan\"")  >= 0;
+        bool tilt = json.indexOf("\"axis\":\"tilt\"") >= 0 || json.indexOf("\"axis\": \"tilt\"") >= 0;
+        requestStop(pan, tilt);
+        return;
+    }
+
     BleCmdMsg msg;
     msg.isWifi = isWifi;
     strncpy(msg.json, json.c_str(), sizeof(msg.json) - 1);
     msg.json[sizeof(msg.json) - 1] = '\0';
-    // 队列满时丢弃（jog 类命令幂等，丢失一条无害；重复 move 也无害）
+    // 队列满时丢弃本条非停止命令（jog/move 幂等，App 会重发；停止已走旁路不受影响）
     xQueueSend(s_cmdQueue, &msg, 0);
 }
 
@@ -124,18 +142,51 @@ size_t BleServiceManager::pendingCommands() const {
 void BleServiceManager::setConnected(bool connected) {
     if (_connected == connected) return;
     _connected = connected;
+    if (!connected) {
+        // P1-1：断连安全——丢弃所有待执行命令（蓝牙栈任务中调用，仅用非阻塞 API），
+        // 并置断连事件标志，由主循环执行失联停机（串口阻塞只能在主任务做）
+        if (s_cmdQueue) xQueueReset(s_cmdQueue);
+        _stopFlags.store(0);
+        _disconnectPending.store(true);
+    }
     if (_connectCb) _connectCb(connected);
 }
 
+bool BleServiceManager::takeDisconnectEvent() {
+    if (!_disconnectPending.load()) return false;
+    _disconnectPending.store(false);
+    return true;
+}
+
+void BleServiceManager::requestStop(bool pan, bool tilt) {
+    // P1-2：清空队列（丢弃堆积的旧运动命令）+ 原子置位停止请求。
+    // 在蓝牙栈任务中调用：xQueueReset 与原子操作均非阻塞、线程安全。
+    if (s_cmdQueue) xQueueReset(s_cmdQueue);
+    if (pan)  _stopFlags.fetch_or(0x01);
+    if (tilt) _stopFlags.fetch_or(0x02);
+}
+
+bool BleServiceManager::takeStopRequest(bool& pan, bool& tilt) {
+    uint8_t f = _stopFlags.load();
+    if (f == 0) { pan = false; tilt = false; return false; }
+    // 按位清除已消费的标志（不清并发新增的请求）
+    if (f & 0x01) _stopFlags.fetch_and((uint8_t)~0x01);
+    if (f & 0x02) _stopFlags.fetch_and((uint8_t)~0x02);
+    pan  = (f & 0x01) != 0;
+    tilt = (f & 0x02) != 0;
+    return true;
+}
+
 void BleServiceManager::notifyResponse(const String& json) {
-    if (!_charResp) return;
+    // P1-1：断连后不推送（无订阅者；也避免蓝牙栈对已断句柄操作）
+    if (!_charResp || !_connected) return;
     // 超长自动截断保护（协议约定单条 < 200B，MTU 247 内）
     _charResp->setValue((uint8_t*)json.c_str(), json.length());
     _charResp->notify();
 }
 
 void BleServiceManager::notifyStatus(const String& json) {
-    if (!_charStatus) return;
+    if (!_charStatus || !_connected) return;
     _charStatus->setValue((uint8_t*)json.c_str(), json.length());
     _charStatus->notify();
     _statusReadValue = json;   // 同步供 APP 主动 Read

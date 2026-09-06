@@ -11,6 +11,8 @@ F32C 电机 Web 调试界面（多电机级联总线版，直接 USB-TTL 连电�
 """
 
 import argparse
+import secrets
+import threading
 import time
 from collections import deque
 from flask import Flask, Response, request, jsonify
@@ -18,6 +20,25 @@ from werkzeug.exceptions import HTTPException
 from f32c_protocol import F32CMotor, list_serial_ports
 
 app = Flask(__name__)
+
+# ======================== 安全基线（P1-6 / P1-7） ========================
+# P1-6：串口事务锁——set_addr 与命令下发必须原子完成，防止 Flask 多线程并发
+# 请求把 pan 轴命令构造成 tilt 轴地址的帧（错轴）。RLock 允许嵌套加锁路径。
+motor_lock = threading.RLock()
+
+# P1-7：访问令牌——每次启动随机生成，/api/* 必须携带（query 参数 token 或
+# X-Auth-Token 头）。令牌不落 Cookie，外部页面无法通过 CSRF 获取。
+AUTH_TOKEN = secrets.token_urlsafe(16)
+
+
+@app.before_request
+def _check_token():
+    # 仅 /api/* 需要认证；页面本身不含敏感数据且由下方路由注入令牌
+    if request.path.startswith("/api/"):
+        supplied = request.args.get("token") or request.headers.get("X-Auth-Token", "")
+        if supplied != AUTH_TOKEN:
+            return jsonify({"success": False, "msg": "未授权：缺少或错误的 token"}), 401
+    return None
 
 
 # 全局兜底：任何未捕获异常（如串口读超时、电机无响应）都返回 JSON，
@@ -76,9 +97,12 @@ def _gimbal_ready():
 
 
 def _send_axis(axis: str, method: str, *args):
-    """向指定轴电机发命令：临时切总线地址 → 调用 → 恢复不需要（每次发送前都会 set_addr）"""
-    motor.set_addr(GIMBAL[f"{axis}_addr"])
-    r = getattr(motor, method)(*args)
+    """向指定轴电机发命令：临时切总线地址 → 调用 → 恢复不需要（每次发送前都会 set_addr）
+    P1-6：set_addr 与命令下发持锁原子完成——多线程并发下 pan 请求不会
+    被 tilt 的 set_addr 穿插，杜绝错轴帧。"""
+    with motor_lock:
+        motor.set_addr(GIMBAL[f"{axis}_addr"])
+        r = getattr(motor, method)(*args)
     add_log(f"[云台][{axis}] {method}({', '.join(str(a) for a in args)}) -> {'OK' if r.valid else r.parsed_text}")
     return r
 
@@ -569,6 +593,8 @@ try { console.log('%c[F32C WebUI] Script loaded: ' + BUILD_ID, 'color:#22c55e;fo
 var RE_NEWLINES = new RegExp('\\n', 'g');
 
 var $ = function(id) { return document.getElementById(id); };
+// P1-7：访问令牌（服务端渲染时注入；所有 /api 请求统一携带）
+var API_TOKEN = "__AUTH_TOKEN__";
 var state = {
     connected:false,   // 串口是否已打开
     motorCount:0,      // 扫描到的电机数
@@ -589,9 +615,9 @@ function fmtLog(t){
 
 async function ajax(url, method='GET') {
     try {
-        // 加时间戳防止浏览器缓存（每次请求都强制向服务器拿最新）
+        // P1-7：携带访问令牌 + 时间戳防缓存
         const sep = url.includes('?') ? '&' : '?';
-        const nocache = sep + '_t=' + Date.now();
+        const nocache = sep + 'token=' + encodeURIComponent(API_TOKEN) + '&_t=' + Date.now();
         const r = await fetch(url + nocache, {method, cache:'no-store'});
         return await r.json();
     } catch(e) {
@@ -956,7 +982,7 @@ async function clearLog() { await ajax('/api/log?clear=1'); refreshLog(); }
 
 async function refreshLog() {
     try {
-        const t = await fetch('/api/log').then(r=>r.text());
+        const t = await fetch('/api/log?token=' + encodeURIComponent(API_TOKEN)).then(r=>r.text());
         const el = $('logc');
         const nh = fmtLog(t);
         if (el.innerHTML !== nh) { el.innerHTML = nh; el.scrollTop = el.scrollHeight; }
@@ -1062,8 +1088,8 @@ function gMove(final) {
     if (!final && now - G.lastSend < 130) return;   // 拖动中节流
     G.lastSend = now;
     var pan = G.pendPan.toFixed(1), tilt = G.pendTilt.toFixed(1);
-    // 不 await：拖动要跟手，网络慢也不卡 UI
-    fetch('/api/gimbal/move?pan=' + pan + '&tilt=' + tilt + '&_t=' + now)
+    // 不 await：拖动要跟手，网络慢也不卡 UI（token 为 P1-7 访问令牌）
+    fetch('/api/gimbal/move?pan=' + pan + '&tilt=' + tilt + '&token=' + encodeURIComponent(API_TOKEN) + '&_t=' + now)
         .then(function(r){ return r.json(); })
         .then(function(j){ if (!j.success) showResult(j.msg, false); })
         .catch(function(){});
@@ -1132,7 +1158,9 @@ def index():
     # 之前用 render_template_string 时，jinja2 解析层会对 JS 正则字面量 /pattern/ 的
     # 斜杠字符做潜在处理，导致浏览器端抛 "Invalid regular expression: missing /"。
     # 现在直接返回原字符串，任何字符都原封不动到达浏览器。
-    return Response(PAGE, mimetype="text/html; charset=utf-8")
+    # P1-7：把本次启动的访问令牌注入页面（前端 ajax 统一带上）
+    return Response(PAGE.replace("__AUTH_TOKEN__", AUTH_TOKEN),
+                    mimetype="text/html; charset=utf-8")
 
 
 @app.route("/api/ports")
@@ -1148,11 +1176,12 @@ def api_connect():
     if not port:
         return resp(False, "缺少 port 参数")
     try:
-        if motor:
-            try: motor.disconnect()
-            except Exception: pass
-        motor = F32CMotor(port=port, baud=baud, debug=True)
-        ok = motor.connect()
+        with motor_lock:   # P1-6：串口打开/关闭与其他请求的串口事务互斥
+            if motor:
+                try: motor.disconnect()
+                except Exception: pass
+            motor = F32CMotor(port=port, baud=baud, debug=True)
+            ok = motor.connect()
         add_log(("USB-TTL 连接成功: " if ok else "[错误] USB-TTL 连接失败: ") + f"{port} @ {baud}")
         online_motors = []
         return resp(ok, f"串口 {port} @ {baud}" + (" 打开成功 ✅" if ok else " 打开失败 ❌（端口被占用或不存在）"),
@@ -1166,9 +1195,10 @@ def api_connect():
 def api_disconnect():
     global motor, online_motors
     try:
-        if motor:
-            motor.disconnect()
-            motor = None
+        with motor_lock:   # P1-6
+            if motor:
+                motor.disconnect()
+                motor = None
         online_motors = []
         add_log("已断开串口")
         return resp(True, "已断开串口", ok=True)
@@ -1186,7 +1216,8 @@ def api_scan():
     if e < s: s, e = e, s
     add_log(f">>> 扫描总线 地址 {s} ~ {e}")
     global online_motors
-    raw = motor.scan_bus(start=s, end=e, print_progress=False)
+    with motor_lock:   # P1-6：扫描期间独占串口（scan 内部会切换地址）
+        raw = motor.scan_bus(start=s, end=e, print_progress=False)
     # 补齐 addr_hex 前端用，兼容两种命名
     for m in raw:
         if "addr_hex" not in m:
@@ -1212,7 +1243,8 @@ def api_use():
     addr = request.args.get("addr", 0, type=int)
     if addr < 1 or addr > 127:
         return resp(False, "地址必须 1~127")
-    motor.set_addr(addr)
+    with motor_lock:   # P1-6
+        motor.set_addr(addr)
     add_log(f"切换当前控制到 ID{addr} (0x{addr:02X})")
     return resp(True, f"已切换当前控制到 <b>ID {addr} (0x{addr:02X})</b>，后续所有命令会下发到该电机",
                 ok=True, addr=addr)
@@ -1226,13 +1258,15 @@ def api_setaddr():
     if new < 1 or new > 127:
         return resp(False, "新地址必须 1~127")
     add_log(f">>> 将当前电机 ID{motor.addr} 自身地址改为 {new}")
-    r = motor.set_device_address(new)
+    with motor_lock:   # P1-6：改地址 + 切换控制地址原子完成
+        r = motor.set_device_address(new)
+        if r.valid:
+            motor.set_addr(new)
     if r.valid:
         add_log("地址写入成功，建议随后调用 '保存参数' 永久生效")
-        motor.set_addr(new)
         return resp(True, f"地址已改为 <b>{new}</b>，请再点「保存参数」使其永久写入 Flash；当前控制地址已同步切换为 {new}",
                     addr=new, ok=True)
-    return resp(False, "地址写入失败: " + r.parsed_text)
+    return resp(False, "改地址失败: " + r.parsed_text)
 
 
 # ------------------------- 统一命令执行 -------------------------
@@ -1240,9 +1274,10 @@ def exec_motor_method(method, *args):
     ok, err = needs_motor()
     if not ok: return resp(False, err)
     try:
-        fn = getattr(motor, method)
-        add_log(f">>> [ID{motor.addr}] {method}{args if args else ''}")
-        r = fn(*args)
+        with motor_lock:   # P1-6：命令下发持锁（与 set_addr 事务互斥，防错轴）
+            fn = getattr(motor, method)
+            add_log(f">>> [ID{motor.addr}] {method}{args if args else ''}")
+            r = fn(*args)
         txt = r.parsed_text if hasattr(r, 'parsed_text') else str(r)
         ok2 = r.valid if hasattr(r, 'valid') else True
         return resp(ok2, txt)
@@ -1308,7 +1343,8 @@ def api_custom():
             s = int(a[0]) if len(a) >= 1 else 1
             e = int(a[1]) if len(a) >= 2 else 16
             global online_motors
-            raw = motor.scan_bus(start=s, end=e, print_progress=False)
+            with motor_lock:   # P1-6：扫描独占串口
+                raw = motor.scan_bus(start=s, end=e, print_progress=False)
             for m in raw:
                 if "addr_hex" not in m:
                     m["addr_hex"] = f"0x{m['addr']:02X}"
@@ -1325,7 +1361,8 @@ def api_custom():
 
         if c == "use" and a:
             new_addr = int(a[0], 0)
-            motor.set_addr(new_addr)
+            with motor_lock:   # P1-6
+                motor.set_addr(new_addr)
             add_log(f"切换当前控制到 ID{new_addr} (0x{new_addr:02X})")
             return resp(True, f"已切换到 ID {new_addr} (0x{new_addr:02X})",
                         switched=True, addr=new_addr)
@@ -1333,9 +1370,11 @@ def api_custom():
         if c == "setaddr" and a:
             new_addr = int(a[0], 0)
             add_log(f">>> 将当前电机地址改为 {new_addr}")
-            r = motor.set_device_address(new_addr)
+            with motor_lock:   # P1-6：改地址 + 切换控制地址原子完成
+                r = motor.set_device_address(new_addr)
+                if r.valid:
+                    motor.set_addr(new_addr)
             if r.valid:
-                motor.set_addr(new_addr)
                 return resp(True, f"地址已改为 {new_addr}（记得 save 保存）", addr=new_addr)
             return resp(False, "改地址失败: " + r.parsed_text)
 
@@ -1490,7 +1529,9 @@ def main():
     parser.add_argument("--port", help="USB-TTL 串口号，不填请在网页里选择")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--scan", action="store_true", help="启动时自动扫描 (地址1~16)")
-    parser.add_argument("--webhost", default="0.0.0.0")
+    # P1-7：默认只监听本机回环地址；如需局域网访问必须显式传 --webhost 0.0.0.0
+    parser.add_argument("--webhost", default="127.0.0.1",
+                        help="Web 监听地址（默认 127.0.0.1 仅本机；0.0.0.0 为全网卡，风险自负）")
     parser.add_argument("--webport", type=int, default=5000)
     parser.add_argument("--nodebug", action="store_true", help="关闭 TX/RX 字节打印")
     args = parser.parse_args()
@@ -1515,7 +1556,11 @@ def main():
     print("\n" + "=" * 60)
     print("  F32C 多电机总线 Web 调试台")
     print("=" * 60)
-    print(f"  浏览器访问: http://127.0.0.1:{args.webport}")
+    # P1-7：URL 内含本次启动的访问令牌（/api/* 必须携带）
+    print(f"  浏览器访问: http://{args.webhost}:{args.webport}/?token={AUTH_TOKEN}")
+    if args.webhost in ("0.0.0.0", "::"):
+        print("  [警告] 正在监听所有网卡：任何能访问本机该端口的设备都可用令牌控制电机！")
+        print("  [警告] 令牌会出现在浏览器地址栏/代理日志中，仅限受信任网络使用。")
     if args.port: print(f"  指定串口: {args.port}")
     else:         print("  指定串口: 未指定 (请在网页选择)")
     print("  接线提示:")

@@ -106,7 +106,8 @@ MotorResponse F32CMotor::_parseResponse(const uint8_t* raw, size_t len) {
         return r;
     }
     if (raw[1] != _addr) {
-        r.valid = true; r.bcc_ok = true;
+        // 地址不匹配视为失败（P1-4 修复：总线串扰/他机回包不得标记为成功）
+        r.valid = false;
         r.parsed_text = "地址不匹配 期望 " + String(_addr, HEX) + " 实际 " + String(raw[1], HEX);
         return r;
     }

@@ -43,6 +43,9 @@ private:
     void _handleMotorCmd(const String& json);
     void _handleWifiCmd(const String& json);
 
+    // P1-1：BLE 断连后的失联停机（主任务中执行，含串口阻塞）
+    void _handleDisconnect();
+
     void _notifyResult(bool ok, const String& msg);
     void _notifyError(const String& msg);
     void _notifyQueryResult(uint8_t addr, const char* type, float value, const String& text);
