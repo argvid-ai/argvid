@@ -14,6 +14,7 @@ data class OwnedRescueAsset(
     val coverageComplete: Boolean,
     val qualityTier: QualityTier,
     val rotationDegrees: Int = 0,
+    val audio: OwnedPcmAudio? = null,
 )
 
 data class EncodedMoment(

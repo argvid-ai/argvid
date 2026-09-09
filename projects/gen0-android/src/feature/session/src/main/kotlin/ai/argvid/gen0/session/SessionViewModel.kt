@@ -3,6 +3,9 @@ package ai.argvid.gen0.session
 import ai.argvid.gen0.domain.capture.CaptureSessionController
 import ai.argvid.gen0.domain.capture.CaptureStopResult
 import ai.argvid.gen0.domain.capture.StopReason
+import ai.argvid.gen0.domain.detection.AutomaticRecordingPolicy
+import ai.argvid.gen0.domain.detection.DetectionSensitivity
+import ai.argvid.gen0.domain.detection.SubjectObservation
 import ai.argvid.gen0.domain.gimbal.GimbalConnectionState
 import ai.argvid.gen0.domain.gimbal.GimbalController
 import ai.argvid.gen0.domain.gimbal.GimbalMotionState
@@ -93,6 +96,12 @@ class SessionViewModel(
     private var stopJob: Job? = null
     private var startJob: Job? = null
     private var cleanupFailed = false
+    private var gimbalNotice: String? = null
+    private var rescueInProgress = false
+    private var rescueFailureMessage: String? = null
+    private var captureFailureMessage: String? = null
+    private val automaticRecordingPolicy = AutomaticRecordingPolicy()
+    private var subjectDetection = SubjectDetectionUiState()
     private val mutableUiState = MutableStateFlow(buildState())
     val uiState: StateFlow<SessionUiState> = mutableUiState.asStateFlow()
 
@@ -112,10 +121,10 @@ class SessionViewModel(
         when (action) {
             SessionAction.StartPreflight -> requestStart()
             SessionAction.ConnectGimbal -> {
-                permissionMessage = "仅提供语义模拟器；不连接物理云台"
+                gimbalNotice = "仅提供语义模拟器；不连接物理云台"
                 refresh()
             }
-            SessionAction.Rescue -> actionScope.launch { applyMomentResult(moments.captureRescue(clock.nowUs())) }
+            SessionAction.Rescue -> requestRescue()
             SessionAction.RetrySave -> actionScope.launch { applyMomentResult(moments.retrySaving()) }
             SessionAction.AbandonSave -> actionScope.launch { applyMomentResult(moments.abandon()) }
             SessionAction.RetryCleanup -> actionScope.launch { applyMomentResult(moments.retryCleanup()) }
@@ -137,11 +146,57 @@ class SessionViewModel(
     private fun applyMomentResult(result: MomentResult) {
         if (result.failure == MomentFailure.CleanupFailed) cleanupFailed = true
         else if (result.failure == null || result.failure == MomentFailure.NoPendingMoment) cleanupFailed = false
+        rescueFailureMessage = when (result.failure) {
+            MomentFailure.InsufficientCoverage -> "缓冲不连续或画面已过期，未保存；请等待缓冲就绪后重试"
+            MomentFailure.EncodeFailed -> "录像编码失败，未保存；请重试救回"
+            MomentFailure.Stopped -> "会话已停止，本次录像未保存"
+            else -> null
+        }
         refresh()
     }
 
     fun onWarmupProgress(durationUs: Long) {
         effectiveDurationUs = durationUs.coerceIn(0, RESCUE_DURATION_US)
+        refresh()
+    }
+
+    private fun requestRescue() {
+        if (rescueInProgress || !buildState().rescueEnabled) return
+        rescueInProgress = true
+        rescueFailureMessage = null
+        val requestedAtUs = clock.nowUs()
+        refresh()
+        actionScope.launch {
+            try {
+                applyMomentResult(moments.captureRescue(requestedAtUs))
+            } finally {
+                rescueInProgress = false
+                refresh()
+            }
+        }
+    }
+
+    fun onSubjectObservation(observation: SubjectObservation) {
+        val decision = automaticRecordingPolicy.update(observation.hasSubject, observation.observedAt)
+        subjectDetection = subjectDetection.copy(
+            detectorAvailable = true,
+            labels = observation.labels,
+            lastDecision = decision,
+        )
+        refresh()
+    }
+
+    fun onPersonDetectionSensitivityChanged(progress: Int) {
+        subjectDetection = subjectDetection.copy(
+            personSensitivity = DetectionSensitivity.fromProgress(progress),
+        )
+        refresh()
+    }
+
+    fun onFaceDetectionSensitivityChanged(progress: Int) {
+        subjectDetection = subjectDetection.copy(
+            faceSensitivity = DetectionSensitivity.fromProgress(progress),
+        )
         refresh()
     }
 
@@ -153,6 +208,7 @@ class SessionViewModel(
         } else {
             permission.deniedMessage()
         }
+        if (!granted) captureFailureMessage = permission.deniedMessage()
         mutableUiState.value = buildState(permissionRequest = null)
         if (permission == AppPermission.Camera && granted) {
             startJob = actionScope.launch {
@@ -160,10 +216,30 @@ class SessionViewModel(
                 capture.beginSession()
                 resumeConfirmationRequired = false
                 permissionMessage = null
+                rescueFailureMessage = null
+                captureFailureMessage = null
                 effectiveDurationUs = 0
                 refresh()
             }
         }
+    }
+
+    fun onSystemPermissionChanged(permission: AppPermission, granted: Boolean) {
+        val previous = permissionCoordinator.status(permission)
+        permissionCoordinator.synchronize(permission, granted)
+        if (permission == AppPermission.Camera && previous == PermissionStatus.Granted && !granted &&
+            (isActiveSession() || startJob?.isActive == true)
+        ) {
+            stop(StopReason.PermissionLost, requireResume = true)
+        } else {
+            refresh()
+        }
+    }
+
+    fun onCaptureFailure(message: String) {
+        stop(StopReason.Interruption, requireResume = true)
+        captureFailureMessage = message
+        refresh()
     }
 
     fun onAppStopped() {
@@ -178,6 +254,7 @@ class SessionViewModel(
         moments.onStop()
         resumeConfirmationRequired = requireResume
         permissionMessage = null
+        rescueFailureMessage = null
         effectiveDurationUs = 0
         mutableUiState.value = buildState(permissionRequest = null)
         stopJob = actionScope.launch {
@@ -218,13 +295,16 @@ class SessionViewModel(
             session != SessionState.Ended &&
             session != SessionState.Paused(PauseReason.UserStop)
         val status = when {
+            captureFailureMessage != null -> captureFailureMessage.orEmpty()
             moment == MomentState.CatalogFailed -> "视频已在相册；本地记录失败，请重试记录，暂存副本仍保留"
             resumeConfirmationRequired -> "会话已暂停，请确认后重新开始"
             moment is MomentState.Encoding || moment is MomentState.Saving -> "已锁定最近15秒，正在保存"
+            rescueInProgress && rescueFailureMessage == null -> "正在锁定最近15秒，请稍候"
             cleanupFailed && moment is MomentState.Saved -> "已保存到相册；暂存清理失败，请重试清理或在 Today 删除"
             cleanupFailed -> "暂存清理失败，请重试清理"
             moment is MomentState.Saved -> "已保存到相册"
             moment == MomentState.SaveFailed -> "保存失败，可重试或放弃"
+            rescueFailureMessage != null -> rescueFailureMessage.orEmpty()
             permissionMessage != null -> permissionMessage.orEmpty()
             session == SessionState.Paused(PauseReason.Motion) && !capture.acceptFrames.value -> "云台调整中"
             session == SessionState.Paused(PauseReason.Motion) -> "正在重新积累15秒缓冲"
@@ -242,7 +322,7 @@ class SessionViewModel(
                 temperatureC = gimbal.telemetry.value.temperatureC,
             ),
             warmupRemainingUs = (RESCUE_DURATION_US - effectiveDurationUs).coerceAtLeast(0),
-            rescueEnabled = rescueAvailable && session == SessionState.Running && !cleanupFailed &&
+            rescueEnabled = rescueAvailable && session == SessionState.Running && !rescueInProgress && !cleanupFailed &&
                 moment !is MomentState.Encoding && moment !is MomentState.Saving &&
                 moment != MomentState.SaveFailed && moment != MomentState.CatalogFailed,
             stopEnabled = active && session != SessionState.Ended,
@@ -253,15 +333,24 @@ class SessionViewModel(
             showCleanupFailure = cleanupFailed,
             permissionRequest = permissionRequest,
             resumeConfirmationRequired = resumeConfirmationRequired,
+            gimbalNotice = gimbalNotice,
+            subjectDetection = subjectDetection,
         )
     }
 
+    private fun isActiveSession(): Boolean {
+        val session = capture.state.value
+        return session != SessionState.Idle &&
+            session != SessionState.Ended &&
+            session != SessionState.Paused(PauseReason.UserStop)
+    }
+
     private fun AppPermission.displayName(): String = when (this) {
-        AppPermission.Camera -> "相机"
+        AppPermission.Camera -> "相机和麦克风"
     }
 
     private fun AppPermission.deniedMessage(): String = when (this) {
-        AppPermission.Camera -> "相机权限未授予，采集不可用"
+        AppPermission.Camera -> "相机或麦克风权限未授予，采集不可用；请在系统设置中允许两项权限"
     }
 
     private companion object {

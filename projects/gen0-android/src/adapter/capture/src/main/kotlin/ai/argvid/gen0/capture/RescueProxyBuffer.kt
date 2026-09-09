@@ -15,9 +15,11 @@ class RescueProxyBuffer(
     private val frames = ArrayDeque<ProxyFrame>()
     private var logicalBytes = 0L
     private var latestTimestampUs: Long? = null
+    private var latestReceivedAtUs: Long? = null
 
-    suspend fun append(frame: ProxyFrame) = mutex.withLock {
+    suspend fun append(frame: ProxyFrame, receivedAtUs: Long = frame.timestampUs) = mutex.withLock {
         require(frame.timestampUs >= 0)
+        require(receivedAtUs >= 0)
         require(frame.width == configuration.width && frame.height == configuration.height)
         require(frame.jpeg.isNotEmpty())
         require(frame.jpeg.size.toLong() <= configuration.maxLogicalBytes)
@@ -27,6 +29,7 @@ class RescueProxyBuffer(
         frames.addLast(ownedFrame)
         logicalBytes += ownedFrame.jpeg.size
         latestTimestampUs = ownedFrame.timestampUs
+        latestReceivedAtUs = receivedAtUs
 
         val oldestAllowedUs = ownedFrame.timestampUs - configuration.retentionUs
         while (frames.firstOrNull()?.timestampUs?.let { it < oldestAllowedUs } == true) {
@@ -41,6 +44,10 @@ class RescueProxyBuffer(
         endingAtUs: Long,
         lookbackUs: Long,
     ): RescueAsset = mutex.withLock {
+        snapshotLocked(endingAtUs, lookbackUs)
+    }
+
+    private fun snapshotLocked(endingAtUs: Long, lookbackUs: Long): RescueAsset {
         require(endingAtUs >= 0)
         require(lookbackUs > 0)
         val requestStartUs = endingAtUs - lookbackUs
@@ -49,7 +56,7 @@ class RescueProxyBuffer(
             .filter { it.timestampUs in requestStartUs..endingAtUs }
             .map { it.copy(jpeg = it.jpeg.copyOf()) }
             .toList()
-        RescueAsset(
+        return RescueAsset(
             frames = ownedFrames,
             requestStartUs = requestStartUs,
             requestEndUs = endingAtUs,
@@ -72,6 +79,7 @@ class RescueProxyBuffer(
         frames.clear()
         logicalBytes = 0
         latestTimestampUs = null
+        latestReceivedAtUs = null
     }
 
     override suspend fun frameCount(): Int = mutex.withLock { frames.size }
@@ -86,21 +94,37 @@ class RescueProxyBuffer(
         lookbackUs: Long,
     ): OwnedRescueAsset {
         val asset = ownedSnapshot(endingAtUs, lookbackUs)
-        return OwnedRescueAsset(
-            frames = asset.frames.map { frame ->
-                RescueFrame(
-                    timestampUs = frame.timestampUs,
-                    width = frame.width,
-                    height = frame.height,
-                    jpeg = frame.jpeg.copyOf(),
-                )
-            },
-            requestStartUs = asset.requestStartUs,
-            requestEndUs = asset.requestEndUs,
-            coverageComplete = asset.coverage.isComplete,
-            qualityTier = asset.qualityTier,
-        )
+        return asset.toMoment()
     }
+
+    // requestedAtUs/receivedAtUs share the host clock. Frame timestamps remain
+    // in the camera clock domain, including the selected window's endpoints.
+    suspend fun ownedRecentMomentSnapshot(
+        requestedAtUs: Long,
+        lookbackUs: Long,
+    ): OwnedRescueAsset = mutex.withLock {
+        require(requestedAtUs >= 0)
+        val receivedAtUs = latestReceivedAtUs
+        val fresh = receivedAtUs != null &&
+            requestedAtUs - receivedAtUs in 0..(configuration.targetIntervalUs * 2)
+        val asset = snapshotLocked(latestTimestampUs ?: requestedAtUs, lookbackUs)
+        asset.toMoment().copy(coverageComplete = fresh && asset.coverage.isComplete)
+    }
+
+    private fun RescueAsset.toMoment() = OwnedRescueAsset(
+        frames = frames.map { frame ->
+            RescueFrame(
+                timestampUs = frame.timestampUs,
+                width = frame.width,
+                height = frame.height,
+                jpeg = frame.jpeg.copyOf(),
+            )
+        },
+        requestStartUs = requestStartUs,
+        requestEndUs = requestEndUs,
+        coverageComplete = coverage.isComplete,
+        qualityTier = qualityTier,
+    )
 
     suspend fun logicalByteCount(): Long = mutex.withLock { logicalBytes }
 
@@ -121,12 +145,15 @@ class RescueProxyBuffer(
         val largestGapUs = selectedFrames.zipWithNext { left, right -> right.timestampUs - left.timestampUs }
             .maxOrNull() ?: 0
         val intervalUs = configuration.targetIntervalUs
+        // Camera cadence is quantized and may exceed the target interval.
+        // Use the same continuity bound at the edges and inside the window.
+        val maxGapUs = intervalUs * 2
         val firstTimestampUs = selectedFrames.firstOrNull()?.timestampUs
         val lastTimestampUs = selectedFrames.lastOrNull()?.timestampUs
         val complete = selectedFrames.size > 1 &&
-            firstTimestampUs != null && firstTimestampUs <= requestStartUs + intervalUs &&
-            lastTimestampUs != null && lastTimestampUs >= requestEndUs - intervalUs &&
-            largestGapUs <= intervalUs * 2
+            firstTimestampUs != null && firstTimestampUs <= requestStartUs + maxGapUs &&
+            lastTimestampUs != null && lastTimestampUs >= requestEndUs - maxGapUs &&
+            largestGapUs <= maxGapUs
         return ProxyCoverage(
             requestStartUs = requestStartUs,
             requestEndUs = requestEndUs,

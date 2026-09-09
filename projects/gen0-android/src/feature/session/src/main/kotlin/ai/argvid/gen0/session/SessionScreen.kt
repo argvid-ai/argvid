@@ -1,5 +1,7 @@
 package ai.argvid.gen0.session
 
+import ai.argvid.gen0.domain.detection.AutomaticRecordingDecision
+import ai.argvid.gen0.domain.detection.SubjectLabel
 import ai.argvid.gen0.domain.gimbal.GimbalConnectionState
 import ai.argvid.gen0.domain.gimbal.GimbalMotionState
 import ai.argvid.gen0.domain.session.PauseReason
@@ -21,17 +23,20 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlin.math.roundToInt
 
 @Composable
 fun SessionRoute(
@@ -44,7 +49,14 @@ fun SessionRoute(
     LaunchedEffect(state.permissionRequest) {
         state.permissionRequest?.let(onPermissionRequest)
     }
-    SessionScreen(state, viewModel::onAction, modifier, previewContent)
+    SessionScreen(
+        state = state,
+        onAction = viewModel::onAction,
+        modifier = modifier,
+        previewContent = previewContent,
+        onPersonSensitivityChanged = viewModel::onPersonDetectionSensitivityChanged,
+        onFaceSensitivityChanged = viewModel::onFaceDetectionSensitivityChanged,
+    )
 }
 
 @Composable
@@ -53,6 +65,8 @@ fun SessionScreen(
     onAction: (SessionAction) -> Unit,
     modifier: Modifier = Modifier,
     previewContent: @Composable () -> Unit = {},
+    onPersonSensitivityChanged: (Int) -> Unit = {},
+    onFaceSensitivityChanged: (Int) -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -62,13 +76,14 @@ fun SessionScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Gen0 Camera Session", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(state.statusText, style = MaterialTheme.typography.titleMedium)
+        Text("视频＋麦克风声音：启动预检后缓冲最近15秒，停止或离开页面时停止采集。")
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clipToBounds(),
             contentAlignment = Alignment.Center,
         ) {
             if (state.previewVisible) previewContent()
@@ -97,6 +112,30 @@ fun SessionScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("主体检测", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                StatusLine("检测状态", state.subjectDetection.statusText())
+                StatusLine("规则建议", state.subjectDetection.decisionText())
+                StatusLine("人体灵敏度", state.subjectDetection.personSensitivity.progress.toString())
+                Slider(
+                    value = state.subjectDetection.personSensitivity.progress.toFloat(),
+                    onValueChange = { onPersonSensitivityChanged(it.roundToInt()) },
+                    valueRange = 0f..DETECTION_SENSITIVITY_MAX_PROGRESS,
+                    steps = DETECTION_SENSITIVITY_STEPS,
+                    modifier = Modifier.semantics { contentDescription = "人体检测灵敏度" },
+                )
+                StatusLine("人脸灵敏度", state.subjectDetection.faceSensitivity.progress.toString())
+                Slider(
+                    value = state.subjectDetection.faceSensitivity.progress.toFloat(),
+                    onValueChange = { onFaceSensitivityChanged(it.roundToInt()) },
+                    valueRange = 0f..DETECTION_SENSITIVITY_MAX_PROGRESS,
+                    steps = DETECTION_SENSITIVITY_STEPS,
+                    modifier = Modifier.semantics { contentDescription = "人脸检测灵敏度" },
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text("云台语义模拟 · 非物理设备", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 StatusLine("连接", state.gimbal.connection.displayName())
                 StatusLine("运动", state.gimbal.motion.displayName())
@@ -104,6 +143,7 @@ fun SessionScreen(
             }
         }
 
+        Text(state.statusText, style = MaterialTheme.typography.titleMedium)
         Button(
             onClick = { onAction(SessionAction.Rescue) },
             enabled = state.rescueEnabled,
@@ -170,6 +210,11 @@ fun SessionScreen(
                 Text("云台模拟说明")
             }
         }
+        state.gimbalNotice?.let { notice ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Text(notice, modifier = Modifier.padding(16.dp))
+            }
+        }
 
         state.permissionRequest?.let { permission ->
             Text("等待${permission.displayName()}权限结果", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -220,3 +265,20 @@ private fun GimbalMotionState.displayName(): String = when (this) {
 private fun AppPermission.displayName(): String = when (this) {
     AppPermission.Camera -> "相机"
 }
+
+private fun SubjectDetectionUiState.statusText(): String = when {
+    !detectorAvailable -> "检测适配未接入"
+    labels.contains(SubjectLabel.PERSON) && labels.contains(SubjectLabel.FACE) -> "发现人和人脸"
+    labels.contains(SubjectLabel.PERSON) -> "发现人"
+    labels.contains(SubjectLabel.FACE) -> "发现人脸"
+    else -> "未发现主体"
+}
+
+private fun SubjectDetectionUiState.decisionText(): String = when (lastDecision) {
+    null -> "无新建议"
+    AutomaticRecordingDecision.Start -> "满足开始条件"
+    AutomaticRecordingDecision.Stop -> "满足停止条件"
+}
+
+private const val DETECTION_SENSITIVITY_MAX_PROGRESS = 100f
+private const val DETECTION_SENSITIVITY_STEPS = 99

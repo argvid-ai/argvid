@@ -22,6 +22,7 @@ class ApkPolicyTest(unittest.TestCase):
         permissions = set(re.findall(r"uses-permission: name='([^']+)'", output))
         self.assertEqual({
             "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
             "android.permission.WAKE_LOCK",
             "ai.argvid.gen0.camera.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
         }, permissions)

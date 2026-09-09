@@ -1,6 +1,10 @@
 package ai.argvid.gen0.capture
 
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
+import android.os.SystemClock
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -53,6 +57,7 @@ class CameraXSampler(
         previewAndAnalysis = true,
     )
 
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
     override suspend fun start(
         lifecycleOwner: LifecycleOwner,
         surfaceProvider: Preview.SurfaceProvider,
@@ -97,15 +102,22 @@ class CameraXSampler(
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_NV21)
                     .build()
                 analysis = nextAnalysis
-                nextAnalysis.setAnalyzer(executor) { image ->
-                    frameAnalyzer.analyze(ImageProxyCameraFrame(image))
-                }
-                provider.bindToLifecycle(
+                val camera = provider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     nextPreview,
                     nextAnalysis,
                 )
+                val timestampSource = Camera2CameraInfo.from(camera.cameraInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
+                // REALTIME camera timestamps use BOOTTIME; audio uses MONOTONIC.
+                // UNKNOWN camera timestamps follow the platform's approximate uptime basis.
+                val offsetUs = if (timestampSource == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
+                    (System.nanoTime() - SystemClock.elapsedRealtimeNanos()) / 1_000
+                } else 0L
+                nextAnalysis.setAnalyzer(executor) { image ->
+                    frameAnalyzer.analyze(ImageProxyCameraFrame(image, offsetUs))
+                }
             }
             mutableState.value = CameraSamplerState.Running
         } catch (cancellation: CancellationException) {
@@ -166,8 +178,9 @@ class CameraXSampler(
 
 private class ImageProxyCameraFrame(
     private val image: ImageProxy,
+    private val timestampOffsetUs: Long,
 ) : CloseableCameraFrame {
-    override val timestampUs: Long = image.imageInfo.timestamp / 1_000
+    override val timestampUs: Long = image.imageInfo.timestamp / 1_000 + timestampOffsetUs
 
     override val geometry: CameraGeometry
         get() {

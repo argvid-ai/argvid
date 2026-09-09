@@ -9,6 +9,60 @@ import org.junit.Test
 
 class RescueProxyBufferTest {
     @Test
+    fun steadyCameraCadenceDoesNotOscillateAtTheRollingWindowEdge() = runTest {
+        val buffer = RescueProxyBuffer(ProxyConfiguration.p540())
+        // A 30 fps camera throttled to at most 8 fps accepts about every fourth frame.
+        val cadence = listOf(133_333L, 133_333L, 166_666L)
+        var timestampUs = 0L
+        repeat(300) { index ->
+            val it = frame(timestampUs)
+            buffer.append(it)
+            if (it.timestampUs >= 15_000_000) {
+                assertTrue("Incomplete at ${it.timestampUs}",
+                    buffer.coverage(it.timestampUs, 15_000_000).isComplete)
+            }
+            timestampUs += cadence[index % cadence.size]
+        }
+    }
+
+    @Test
+    fun freshRescueUsesCameraTimeEvenWhenClickClockHasADifferentOrigin() = runTest {
+        val buffer = RescueProxyBuffer(ProxyConfiguration.p540())
+        framesInclusive(0, 16_000_000, 133_333).forEach {
+            buffer.append(it, receivedAtUs = it.timestampUs + 900_000_000)
+        }
+        val cameraEnd = buffer.diagnostics().latestTimestampUs!!
+        val asset = buffer.ownedRecentMomentSnapshot(cameraEnd + 900_100_000, 15_000_000)
+        assertTrue(asset.coverageComplete)
+        assertEquals(cameraEnd, asset.requestEndUs)
+        assertEquals(15_000_000, asset.requestEndUs - asset.requestStartUs)
+        assertEquals(cameraEnd, asset.frames.last().timestampUs)
+    }
+
+    @Test
+    fun recentRescueRejectsStaleFramesAndWipedBuffers() = runTest {
+        val buffer = RescueProxyBuffer(ProxyConfiguration.p540())
+        framesInclusive(0, 15_000_000, 125_000).forEach {
+            buffer.append(it, receivedAtUs = it.timestampUs + 900_000_000)
+        }
+        assertTrue(buffer.ownedRecentMomentSnapshot(915_250_000, 15_000_000).coverageComplete)
+        assertFalse(buffer.ownedRecentMomentSnapshot(915_250_001, 15_000_000).coverageComplete)
+        assertFalse(buffer.ownedRecentMomentSnapshot(916_000_000, 15_000_000).coverageComplete)
+        buffer.wipe()
+        assertFalse(buffer.ownedRecentMomentSnapshot(915_100_000, 15_000_000).coverageComplete)
+    }
+
+    @Test
+    fun realFrameGapInvalidatesAPreviouslyReadyWindow() = runTest {
+        val buffer = RescueProxyBuffer(ProxyConfiguration.p540())
+        framesInclusive(0, 15_000_000, 125_000).forEach { buffer.append(it) }
+        assertTrue(buffer.coverage(15_000_000, 15_000_000).isComplete)
+        buffer.append(frame(15_300_000))
+        assertFalse(buffer.coverage(15_300_000, 15_000_000).isComplete)
+        assertFalse(buffer.ownedRecentMomentSnapshot(15_310_000, 15_000_000).coverageComplete)
+    }
+
+    @Test
     fun ringKeepsOnlyLatestFifteenSeconds() = runTest {
         val buffer = RescueProxyBuffer(ProxyConfiguration.p540())
         framesInclusive(0, 20_000_000, 125_000).forEach { buffer.append(it) }

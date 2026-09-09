@@ -6,6 +6,9 @@ import ai.argvid.gen0.domain.capture.CaptureGimbalPort
 import ai.argvid.gen0.domain.capture.CapturePreviewPort
 import ai.argvid.gen0.domain.capture.CaptureSamplerPort
 import ai.argvid.gen0.domain.capture.CaptureSessionController
+import ai.argvid.gen0.domain.detection.AutomaticRecordingDecision
+import ai.argvid.gen0.domain.detection.SubjectLabel
+import ai.argvid.gen0.domain.detection.SubjectObservation
 import ai.argvid.gen0.domain.moment.EncodedMoment
 import ai.argvid.gen0.domain.moment.MomentCatalog
 import ai.argvid.gen0.domain.moment.MomentCoordinator
@@ -31,6 +34,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -39,6 +43,64 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionViewModelTest {
+    @Test
+    fun deniedCapturePermissionsAreVisibleEvenAfterAnEarlierSave() = runTest {
+        val model = viewModel(moments = FakeSessionMoments())
+        model.onAction(SessionAction.Rescue)
+        runCurrent()
+        assertTrue(model.uiState.value.showSaved)
+        model.onAction(SessionAction.Stop)
+        runCurrent()
+        model.onAction(SessionAction.StartPreflight)
+        model.onPermissionResult(AppPermission.Camera, false)
+        runCurrent()
+        assertTrue(model.uiState.value.statusText.contains("麦克风权限未授予"))
+        assertFalse(model.uiState.value.rescueEnabled)
+    }
+
+    @Test
+    fun microphoneFailureStopsCaptureAndRemainsVisibleDuringWarmupUpdates() = runTest {
+        val capture = FakeSessionCapture()
+        val model = viewModel(capture)
+        model.onCaptureFailure("麦克风被系统静音")
+        runCurrent()
+        model.onWarmupProgress(15_000_000)
+        assertEquals(SessionState.Paused(PauseReason.UserStop), capture.state.value)
+        assertFalse(model.uiState.value.rescueEnabled)
+        assertTrue(model.uiState.value.statusText.contains("麦克风被系统静音"))
+    }
+
+    @Test
+    fun rescueFailureRemainsVisibleWhileWarmupUpdatesContinue() = runTest {
+        for (failure in listOf(MomentFailure.InsufficientCoverage, MomentFailure.EncodeFailed)) {
+            val viewModel = viewModel(moments = FakeSessionMoments(rescueFailure = failure))
+            viewModel.onAction(SessionAction.Rescue)
+            runCurrent()
+            val message = viewModel.uiState.value.statusText
+            assertTrue(message.contains("未保存"))
+            viewModel.onWarmupProgress(14_900_000)
+            runCurrent()
+            assertEquals(message, viewModel.uiState.value.statusText)
+            assertFalse(viewModel.uiState.value.showSaved)
+        }
+    }
+
+    @Test
+    fun rescueImmediatelyDisablesTheButtonAndIgnoresRapidDuplicateActions() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val moments = FakeSessionMoments(saveGate = gate)
+        val viewModel = viewModel(moments = moments)
+        viewModel.onAction(SessionAction.Rescue)
+        assertFalse(viewModel.uiState.value.rescueEnabled)
+        viewModel.onAction(SessionAction.Rescue)
+        runCurrent()
+        assertEquals(1, moments.rescueCalls)
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.showSaved)
+        assertTrue(viewModel.uiState.value.rescueEnabled)
+    }
+
     @Test
     fun backgroundCancelsAStartStillWaitingOnAnEarlierMoment() = runTest {
         val gate = CompletableDeferred<Unit>()
@@ -85,7 +147,32 @@ class SessionViewModelTest {
         viewModel.onAction(SessionAction.ConnectGimbal)
 
         assertNull(viewModel.uiState.value.permissionRequest)
-        assertEquals("仅提供语义模拟器；不连接物理云台", viewModel.uiState.value.statusText)
+        assertEquals("仅提供语义模拟器；不连接物理云台", viewModel.uiState.value.gimbalNotice)
+    }
+
+    @Test
+    fun subjectDetectionUpdatesStateWithoutStartingCaptureOrRescue() = runTest {
+        val capture = FakeSessionCapture()
+        val moments = FakeSessionMoments()
+        val viewModel = viewModel(capture = capture, moments = moments)
+        val start = Instant.parse("2026-09-03T00:00:00Z")
+
+        viewModel.onPersonDetectionSensitivityChanged(75)
+        viewModel.onFaceDetectionSensitivityChanged(25)
+        viewModel.onSubjectObservation(SubjectObservation(setOf(SubjectLabel.PERSON), start))
+        viewModel.onSubjectObservation(
+            SubjectObservation(setOf(SubjectLabel.PERSON), start.plusSeconds(2)),
+        )
+
+        val detection = viewModel.uiState.value.subjectDetection
+        assertTrue(detection.detectorAvailable)
+        assertEquals(setOf(SubjectLabel.PERSON), detection.labels)
+        assertEquals(75, detection.personSensitivity.progress)
+        assertEquals(25, detection.faceSensitivity.progress)
+        assertEquals(AutomaticRecordingDecision.Start, detection.lastDecision)
+        assertEquals(SessionState.Running, capture.state.value)
+        assertEquals(MomentState.CandidateInMemory(QualityTier.Proxy), moments.state.value)
+        assertEquals(0, moments.stopCalls)
     }
 
     @Test
@@ -124,7 +211,7 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun deniedCameraPermissionIsNotRequestedInALoop() = runTest {
+    fun deniedCameraPermissionCanBeRetriedAfterAnExplicitUserAction() = runTest {
         val viewModel = viewModel()
 
         viewModel.onAction(SessionAction.StartPreflight)
@@ -133,8 +220,42 @@ class SessionViewModelTest {
         assertNull(viewModel.uiState.value.permissionRequest)
 
         viewModel.onAction(SessionAction.StartPreflight)
-        assertNull(viewModel.uiState.value.permissionRequest)
-        assertEquals("相机权限未授予，采集不可用", viewModel.uiState.value.statusText)
+        assertEquals(AppPermission.Camera, viewModel.uiState.value.permissionRequest)
+    }
+
+    @Test
+    fun externalCameraRevocationStopsAnActiveSessionAndRequiresResume() = runTest {
+        val capture = FakeSessionCapture()
+        val viewModel = viewModel(capture = capture)
+
+        viewModel.onAction(SessionAction.StartPreflight)
+        viewModel.onPermissionResult(AppPermission.Camera, granted = true)
+        runCurrent()
+
+        viewModel.onSystemPermissionChanged(AppPermission.Camera, granted = false)
+        runCurrent()
+
+        assertEquals(listOf(StopReason.PermissionLost), capture.stopReasons)
+        assertTrue(viewModel.uiState.value.resumeConfirmationRequired)
+    }
+
+    @Test
+    fun externalCameraGrantIsAcceptedWithoutRecreatingTheViewModel() = runTest {
+        val coordinator = PermissionCoordinator()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = coordinator,
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+        )
+
+        viewModel.onAction(SessionAction.StartPreflight)
+        viewModel.onPermissionResult(AppPermission.Camera, granted = false)
+        viewModel.onSystemPermissionChanged(AppPermission.Camera, granted = true)
+
+        assertEquals(PermissionStatus.Granted, coordinator.status(AppPermission.Camera))
     }
 
     @Test
@@ -358,12 +479,19 @@ private class FakeSessionMoments(
     private val failSave: Boolean = false,
     private val failCleanup: Boolean = false,
     private val beginGate: CompletableDeferred<Unit>? = null,
+    private val rescueFailure: MomentFailure? = null,
 ) : SessionMomentActions {
     override val state = MutableStateFlow<MomentState>(MomentState.CandidateInMemory(QualityTier.Proxy))
     var stopCalls = 0
+    var rescueCalls = 0
     override suspend fun beginSession() { beginGate?.await() }
 
     override suspend fun captureRescue(nowUs: Long): MomentResult {
+        rescueCalls++
+        rescueFailure?.let {
+            state.value = MomentState.AssetMissing
+            return MomentResult(state.value, it)
+        }
         state.value = MomentState.Saving(QualityTier.Proxy)
         saveGate?.await()
         state.value = if (failSave) MomentState.SaveFailed else MomentState.Saved(QualityTier.Proxy)

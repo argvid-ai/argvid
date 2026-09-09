@@ -31,6 +31,12 @@ interface MomentDao {
 
     @Query(
         "SELECT * FROM moments WHERE status IN ('SAVED','SAVED_WITH_CLEANUP_PENDING') " +
+            "ORDER BY createdAt DESC, id DESC",
+    )
+    fun observePlayableCandidates(): Flow<List<MomentEntity>>
+
+    @Query(
+        "SELECT * FROM moments WHERE status IN ('SAVED','SAVED_WITH_CLEANUP_PENDING') " +
             "ORDER BY createdAt DESC LIMIT 1",
     )
     suspend fun latestPlayableCandidate(): MomentEntity?

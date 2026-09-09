@@ -4,7 +4,7 @@ Status: experimental local implementation; not a signed release or evidence of u
 
 ## Objective and acceptance
 
-Deliver a self-contained Android app with foreground CameraX sampling, manual proxy rescue, Room/MediaStore persistence, truthful latest-clip playback/deletion, and reproducible semantic-gimbal host tests. Preserve eight Gradle modules under `src` with no runtime service secrets. Use a distinct application sandbox and a fresh two-table local storage schema.
+Deliver a self-contained Android app with foreground CameraX and microphone sampling, manual audio/video proxy rescue, Room/MediaStore persistence, a selectable saved-clip library with truthful playback/deletion, and reproducible semantic-gimbal host tests. Both camera and microphone grants are required for new capture; missing audio must not silently downgrade a rescue to video-only. Preserve eight Gradle modules under `src` with no runtime service secrets. Use a distinct application sandbox and a fresh two-table local storage schema.
 
 Acceptance checks are the exact unit/lint/debug-build, instrumentation-compilation, storage-schema, fixture, and selected-file scan commands in README. The repository's pinned-action Android workflow runs the strict Gradle host build on Ubuntu; actual CI results and pending device checks are in [verification](docs/verification.md). Unrun device and HIL tests are pending, never passed.
 

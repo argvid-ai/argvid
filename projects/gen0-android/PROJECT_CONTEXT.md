@@ -1,6 +1,6 @@
 # Project context
 
-Gen0 Camera delivers foreground local capture/rescue, Android MediaStore persistence, a Room metadata catalog, latest-clip playback/deletion, and deterministic semantic gimbal simulation. Its user problem is retaining and managing a recent short clip without a network service. [README](README.md) is the setup and verification entrypoint.
+Gen0 Camera delivers foreground local audio/video capture/rescue, Android MediaStore persistence, a Room metadata catalog, saved-clip selection/playback/deletion, and deterministic semantic gimbal simulation. Its user problem is retaining and managing short clips with microphone sound without a network service. Camera and microphone permission are required for new capture. [README](README.md) is the setup and verification entrypoint.
 
 ## Delivery and boundaries
 
