@@ -24,5 +24,5 @@ sealed interface DeletionUiState {
 }
 
 val DeletionUiState.canRequestDeletion: Boolean
-    get() = this == DeletionUiState.None || this is DeletionUiState.Complete ||
+    get() = this == DeletionUiState.None ||
         this is DeletionUiState.RecordCleared

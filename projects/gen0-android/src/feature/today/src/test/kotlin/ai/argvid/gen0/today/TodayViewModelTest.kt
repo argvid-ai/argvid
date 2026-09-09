@@ -46,6 +46,56 @@ class TodayViewModelTest {
     }
 
     @Test
+    fun completedDeletionReceiptSurvivesAnotherDeleteAttemptUntilExplicitlyCleared() = runTest {
+        val first = moment()
+        val second = first.copy(id = "m2", mediaUri = "content://moment/2")
+        val source = FakeLibrarySource(listOf(first, second))
+        val deleted = mutableListOf<String>()
+        val cleared = mutableListOf<String>()
+        val deletion = object : LocalMomentDeletion {
+            override suspend fun delete(momentId: String): LocalDeletionUiResult {
+                deleted += momentId
+                source.moments.value = source.moments.value.filterNot { it.id == momentId }
+                return LocalDeletionUiResult.Complete
+            }
+            override suspend fun clearRecord(momentId: String): Boolean {
+                cleared += momentId
+                return true
+            }
+        }
+        val viewModel = TodayViewModel(source, FakeMomentPlayer(), injectedScope = backgroundScope,
+            deletion = deletion)
+        runCurrent()
+        assertEquals(TodayUiState.Ready(first, false), viewModel.state.value)
+
+        viewModel.requestLocalDeletion()
+        viewModel.confirmLocalDeletion()
+        runCurrent()
+        assertEquals(listOf(first.id), deleted)
+        assertEquals(listOf(second), viewModel.moments.value)
+        assertEquals(TodayUiState.Ready(second, false), viewModel.state.value)
+        assertEquals(DeletionUiState.Complete(first.id), viewModel.deletionState.value)
+
+        viewModel.requestLocalDeletion()
+        assertEquals(DeletionUiState.Complete(first.id), viewModel.deletionState.value)
+        viewModel.dismissLocalDeletion()
+        assertEquals(DeletionUiState.Complete(first.id), viewModel.deletionState.value)
+        assertEquals(emptyList<String>(), cleared)
+        assertEquals(listOf(first.id), deleted)
+
+        viewModel.clearLocalRecord()
+        runCurrent()
+        assertEquals(listOf(first.id), cleared)
+        assertEquals(DeletionUiState.RecordCleared(first.id), viewModel.deletionState.value)
+
+        viewModel.requestLocalDeletion()
+        assertEquals(DeletionUiState.Confirm(second.id, second.createdAt), viewModel.deletionState.value)
+        viewModel.dismissLocalDeletion()
+        assertEquals(DeletionUiState.None, viewModel.deletionState.value)
+        assertEquals(listOf(first.id), deleted)
+    }
+
+    @Test
     fun retryAndRecordClearingKeepTheOriginalDeletionIdentity() = runTest {
         val first = moment()
         val second = first.copy(id = "m2", mediaUri = "content://moment/2")
