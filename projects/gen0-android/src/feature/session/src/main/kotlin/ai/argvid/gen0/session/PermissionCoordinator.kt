@@ -15,15 +15,19 @@ class PermissionCoordinator {
     private val statuses = AppPermission.entries.associateWith { PermissionStatus.NotAsked }.toMutableMap()
 
     fun request(permission: AppPermission): AppPermission? = when (statuses.getValue(permission)) {
-        PermissionStatus.NotAsked -> permission.also { statuses[it] = PermissionStatus.Requested }
+        PermissionStatus.NotAsked,
+        PermissionStatus.Denied,
+        -> permission.also { statuses[it] = PermissionStatus.Requested }
         PermissionStatus.Requested,
         PermissionStatus.Granted,
-        PermissionStatus.Denied,
         -> null
     }
 
     fun resolve(permission: AppPermission, granted: Boolean) {
-        if (statuses.getValue(permission) != PermissionStatus.Requested) return
+        statuses[permission] = if (granted) PermissionStatus.Granted else PermissionStatus.Denied
+    }
+
+    fun synchronize(permission: AppPermission, granted: Boolean) {
         statuses[permission] = if (granted) PermissionStatus.Granted else PermissionStatus.Denied
     }
 

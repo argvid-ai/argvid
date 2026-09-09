@@ -8,6 +8,7 @@ import java.io.File
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -15,6 +16,37 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LocalDatabaseTest {
+    @Test
+    fun libraryIsNewestFirstAndDeletingAnOlderSelectionLeavesOtherVideos() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, Gen0Database::class.java).build()
+        try {
+            database.sessionDao().insert(SessionEntity("s1", "2026-09-08", null, 0, null))
+            val dao = database.momentDao()
+            for (index in listOf(2, 3, 1)) {
+                dao.insert(MomentEntity(
+                    "m$index", "s1", "manual_rescue", "Proxy", "content://media/$index", 15_000_000,
+                    "2026-09-08T0${index}:00:00Z", MomentDbStatus.SAVED, null, null, null,
+                ))
+            }
+            assertEquals(listOf("m3", "m2", "m1"),
+                dao.observePlayableCandidates().first().map { it.id })
+            val deletedUris = mutableListOf<String>()
+            val coordinator = LocalDeletionCoordinator(
+                RoomLocalDeletionStore(dao),
+                LocalMediaDeleter { deletedUris += it; DeleteAssetResult.Deleted },
+                AppPrivateStagingStore(context.cacheDir),
+            )
+            coordinator.deleteLocal("m1")
+            assertEquals(listOf("content://media/1"), deletedUris)
+            assertEquals(listOf("m3", "m2"), dao.observePlayableCandidates().first().map { it.id })
+            assertEquals(MomentDbStatus.SAVED, dao.get("m2")?.status)
+            assertEquals(MomentDbStatus.SAVED, dao.get("m3")?.status)
+        } finally {
+            database.close()
+        }
+    }
+
     @Test
     fun failedEncoderCleanupIsPersistedAndTodayDeletionRemovesTheRealStagedFile() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()

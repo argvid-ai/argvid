@@ -22,14 +22,14 @@ sealed interface TodayAssetResult {
 }
 
 interface TodayMomentStore {
-    val latestSaved: Flow<MomentEntity?>
+    val saved: Flow<List<MomentEntity>>
     suspend fun get(id: String): MomentEntity?
     suspend fun updateAssetState(id: String, status: MomentDbStatus, mediaUri: String?): Int
     suspend fun markViewed(id: String, viewedAt: String): Int
 }
 
 class RoomTodayMomentStore(private val dao: MomentDao) : TodayMomentStore {
-    override val latestSaved: Flow<MomentEntity?> = dao.observeLatestPlayableCandidate()
+    override val saved = dao.observePlayableCandidates()
     override suspend fun get(id: String): MomentEntity? = dao.get(id)
     override suspend fun updateAssetState(id: String, status: MomentDbStatus, mediaUri: String?) =
         dao.updateAssetState(id, status, mediaUri)
@@ -40,11 +40,12 @@ class TodayRepository(
     private val store: TodayMomentStore,
     private val verifier: AssetVerifier,
 ) {
-    val latest: Flow<TodayMoment?> = store.latestSaved.map { entity ->
-        entity
-            ?.takeIf { it.status == MomentDbStatus.SAVED || it.status == MomentDbStatus.SAVED_WITH_CLEANUP_PENDING }
-            ?.toTodayMomentOrNull()
+    val moments: Flow<List<TodayMoment>> = store.saved.map { entities ->
+        entities.filter {
+            it.status == MomentDbStatus.SAVED || it.status == MomentDbStatus.SAVED_WITH_CLEANUP_PENDING
+        }.mapNotNull { it.toTodayMomentOrNull() }
     }
+    val latest: Flow<TodayMoment?> = moments.map { it.firstOrNull() }
 
     suspend fun refresh(momentId: String): TodayAssetResult {
         val entity = store.get(momentId) ?: return TodayAssetResult.AssetMissing(momentId)

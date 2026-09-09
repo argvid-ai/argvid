@@ -1,6 +1,10 @@
 package ai.argvid.gen0
 
 import ai.argvid.gen0.capture.CameraXSampler
+import ai.argvid.gen0.capture.MicrophoneSampler
+import ai.argvid.gen0.domain.capture.AudioVideoSampler
+import ai.argvid.gen0.capture.AudioVideoRescueBuffer
+import ai.argvid.gen0.domain.moment.PcmAudioBuffer
 import ai.argvid.gen0.capture.DefaultFrameProcessor
 import ai.argvid.gen0.capture.ProxyConfiguration
 import ai.argvid.gen0.capture.RescueProxyBuffer
@@ -17,6 +21,9 @@ import ai.argvid.gen0.media.catalog.RoomMomentCatalog
 import ai.argvid.gen0.media.store.ContentResolverMediaStoreClient
 import ai.argvid.gen0.media.store.MediaStoreMomentSaver
 import android.content.Context
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import android.Manifest
 import androidx.camera.core.Preview
 import androidx.lifecycle.LifecycleOwner
 import java.io.File
@@ -42,6 +49,10 @@ class SessionRuntime(
     private val clock = MonotonicClock { System.nanoTime() / 1_000 }
     private val configuration = ProxyConfiguration.p540()
     private val buffer = RescueProxyBuffer(configuration)
+    private val audioBuffer = PcmAudioBuffer()
+    private val microphone = MicrophoneSampler(appContext, scope)
+    val audioFailure = microphone.failure
+    private val audioVideoBuffer = AudioVideoRescueBuffer(buffer, audioBuffer) { microphone.isRunning }
     private val sampler = CameraXSampler(
         context = appContext,
         configuration = configuration,
@@ -56,8 +67,8 @@ class SessionRuntime(
         ),
     )
     val capture = CaptureSessionController(
-        sampler = sampler,
-        buffer = buffer,
+        sampler = AudioVideoSampler(sampler, microphone),
+        buffer = audioVideoBuffer,
         preview = CapturePreviewPort { },
         gimbal = CaptureGimbalPort { scope.launch { gimbal.hold() } },
         clock = clock,
@@ -65,8 +76,8 @@ class SessionRuntime(
         initialState = ai.argvid.gen0.domain.session.SessionState.Idle,
     )
     val moments = MomentCoordinator(
-        source = buffer,
-        encoder = AndroidProxyMovieEncoder(File(appContext.cacheDir, "rescued-moments")),
+        source = audioVideoBuffer,
+        encoder = AndroidProxyMovieEncoder(File(appContext.cacheDir, "rescued-moments"), requireAudio = true),
         saver = MediaStoreMomentSaver(ContentResolverMediaStoreClient(appContext.contentResolver)),
         catalog = RoomMomentCatalog(
             database = (appContext as Gen0Application).database,
@@ -79,7 +90,7 @@ class SessionRuntime(
         scope.launch {
             sampler.frames.collect { frame ->
                 if (capture.acceptFrames.value) {
-                    buffer.append(frame)
+                    buffer.append(frame, receivedAtUs = clock.nowUs())
                     val coverage = buffer.coverage(frame.timestampUs, 15_000_000)
                     val actualStartUs = coverage.actualStartUs
                     val actualEndUs = coverage.actualEndUs
@@ -100,7 +111,17 @@ class SessionRuntime(
     ) = capture.bindCamera {
         // Rebind to the current Activity/PreviewView, including after recreation.
         sampler.stop()
+        microphone.stop()
+        buffer.wipe()
+        audioBuffer.wipe()
         mutableWarmupDurationUs.value = 0
+        check(ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            "麦克风权限未授予"
+        }
+        microphone.start { timestampUs, samples ->
+            if (capture.acceptFrames.value) audioBuffer.append(timestampUs, samples)
+            samples.fill(0)
+        }
         sampler.start(lifecycleOwner, surfaceProvider, masks = emptyList())
     }
 

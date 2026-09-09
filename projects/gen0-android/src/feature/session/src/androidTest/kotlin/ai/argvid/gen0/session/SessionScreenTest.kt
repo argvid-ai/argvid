@@ -47,6 +47,33 @@ class SessionScreenTest {
         compose.onNodeWithContentDescription("停止并清除采集缓冲").assertIsEnabled()
     }
 
+    @Test
+    fun detectionConfigurationShowsUnavailableStatusAndBothSensitivityControls() {
+        compose.setContent {
+            SessionScreen(
+                state = runningState().copy(subjectDetection = SubjectDetectionUiState()),
+                onAction = {},
+            )
+        }
+
+        compose.onNodeWithText("检测适配未接入").assertExists()
+        compose.onNodeWithText("无新建议").assertExists()
+        compose.onNodeWithContentDescription("人体检测灵敏度").assertExists()
+        compose.onNodeWithContentDescription("人脸检测灵敏度").assertExists()
+    }
+
+    @Test
+    fun simulatorNoticeIsVisibleNearTheAction() {
+        compose.setContent {
+            SessionScreen(
+                state = runningState().copy(gimbalNotice = "仅提供语义模拟器；不连接物理云台"),
+                onAction = {},
+            )
+        }
+
+        compose.onNodeWithText("仅提供语义模拟器；不连接物理云台").assertExists()
+    }
+
     private fun runningState() = SessionUiState(
         sessionState = SessionState.Running,
         previewVisible = true,

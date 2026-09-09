@@ -4,6 +4,7 @@ import ai.argvid.gen0.media.db.MomentDbStatus
 import ai.argvid.gen0.media.db.MomentEntity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -63,7 +64,7 @@ class TodayRepositoryTest {
 
 private class FakeTodayMomentStore(initial: MomentEntity?) : TodayMomentStore {
     val current = MutableStateFlow(initial)
-    override val latestSaved = current
+    override val saved = current.map { listOfNotNull(it) }
 
     override suspend fun get(id: String): MomentEntity? = current.value?.takeIf { it.id == id }
 

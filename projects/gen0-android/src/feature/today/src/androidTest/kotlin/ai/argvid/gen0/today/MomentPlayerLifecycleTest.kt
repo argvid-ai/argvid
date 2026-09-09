@@ -21,7 +21,7 @@ class MomentPlayerLifecycleTest {
     fun backgroundThenPlayReattachesNewPlayerToSurvivingSurface() {
         val moment = TodayMoment("m1", "content://media/nonexistent", 15_000_000, "now", "Proxy")
         val source = object : TodaySource {
-            override val latest = MutableStateFlow(moment)
+            override val moments = MutableStateFlow(listOf(moment))
             override suspend fun refresh(momentId: String) = TodayAssetResult.Playable(moment)
             override suspend fun markViewed(momentId: String, viewedAt: String) = Unit
         }

@@ -85,7 +85,13 @@ fun Gen0App() {
             ),
         )
     }
-    val preview = remember { PreviewView(context) }
+    val preview = remember {
+        PreviewView(context).apply {
+            // TextureView follows Compose scroll transforms instead of leaving a SurfaceView behind.
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
     val factory = remember(runtime) {
         viewModelFactory {
             initializer {
@@ -113,6 +119,7 @@ fun Gen0App() {
     }
     val todayViewModel: TodayViewModel = viewModel(key = "today", factory = todayFactory)
     val todayState by todayViewModel.state.collectAsState()
+    val todayMoments by todayViewModel.moments.collectAsState()
     val deletionState by todayViewModel.deletionState.collectAsState()
     var destination by remember { mutableStateOf(AppDestination.Session) }
     var pendingPermission by remember { mutableStateOf<AppPermission?>(null) }
@@ -120,20 +127,35 @@ fun Gen0App() {
     val completeCameraRequest: (AppPermission, Boolean) -> Unit = { permission, granted ->
         cameraStartJob = scope.launch {
             val ready = if (granted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                runCatching { runtime.startCamera(lifecycleOwner, preview.surfaceProvider) }.isSuccess
+                try {
+                    runtime.startCamera(lifecycleOwner, preview.surfaceProvider)
+                    true
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    sessionViewModel.onPermissionResult(permission, false)
+                    sessionViewModel.onCaptureFailure("相机或麦克风启动失败，请检查权限、系统开关及其他应用占用后重试")
+                    return@launch
+                }
             } else false
             sessionViewModel.onPermissionResult(permission, ready)
         }
     }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val permission = pendingPermission ?: return@rememberLauncherForActivityResult
         pendingPermission = null
-        completeCameraRequest(permission, results.values.isNotEmpty() && results.values.all { it })
+        completeCameraRequest(permission, permission.runtimePermissions().all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        })
     }
 
     DisposableEffect(lifecycleOwner, sessionViewModel, todayViewModel) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = AppPermission.Camera.runtimePermissions().all {
+                    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                }
+                sessionViewModel.onSystemPermissionChanged(AppPermission.Camera, granted)
+            } else if (event == Lifecycle.Event.ON_STOP) {
                 cameraStartJob?.cancel()
                 pendingPermission = null
                 sessionViewModel.onAppStopped()
@@ -142,6 +164,9 @@ fun Gen0App() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(runtime, sessionViewModel) {
+        runtime.audioFailure.collect { failure -> failure?.let(sessionViewModel::onCaptureFailure) }
     }
     LaunchedEffect(runtime, sessionViewModel) {
         runtime.warmupDurationUs.collect(sessionViewModel::onWarmupProgress)
@@ -153,7 +178,7 @@ fun Gen0App() {
         val observer = MediaStoreChangeObserver(
             context.contentResolver,
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-        ) { todayViewModel.retry() }
+        ) { todayViewModel.refreshLibrary() }
         observer.start()
         onDispose { observer.stop() }
     }
@@ -177,6 +202,7 @@ fun Gen0App() {
                             cameraStartJob?.cancel()
                             pendingPermission = null
                             sessionViewModel.onAppStopped()
+                            todayViewModel.refreshLibrary()
                             destination = AppDestination.Today
                         },
                         icon = { Text("■") },
@@ -199,11 +225,16 @@ fun Gen0App() {
                         }
                     },
                     previewContent = {
-                        AndroidView(factory = { preview })
+                        AndroidView(
+                            factory = { preview },
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     },
                 )
                 AppDestination.Today -> TodayScreen(
                     state = todayState,
+                    moments = todayMoments,
+                    onSelectMoment = todayViewModel::selectMoment,
                     deletionState = deletionState,
                     onPlay = todayViewModel::play,
                     onRetry = todayViewModel::retry,
@@ -227,5 +258,5 @@ private enum class AppDestination {
 }
 
 private fun AppPermission.runtimePermissions(): Array<String> = when (this) {
-    AppPermission.Camera -> arrayOf(Manifest.permission.CAMERA)
+    AppPermission.Camera -> arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
 }

@@ -13,15 +13,25 @@ import ai.argvid.gen0.domain.moment.RescueFrame
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 class AndroidProxyMovieEncoder(
     private val stagingDirectory: File,
+    private val requireAudio: Boolean = false,
 ) : MomentEncoder {
     override suspend fun encode(asset: OwnedRescueAsset): EncodedMoment = withContext(Dispatchers.Default) {
         validate(asset)
-        check(stagingDirectory.exists() || stagingDirectory.mkdirs())
-        val output = File.createTempFile("gen0-rescue-", ".mp4", stagingDirectory)
-        encodeToFile(asset, output)
+        val job = currentCoroutineContext()[Job]
+        val audio = asset.audio?.let { encodeAac(it, job) }
+        try {
+            check(stagingDirectory.exists() || stagingDirectory.mkdirs())
+            val output = File.createTempFile("gen0-rescue-", ".mp4", stagingDirectory)
+            try { encodeToFile(asset, output, audio, job) }
+            catch (error: Exception) { output.delete(); throw error }
+        }
+        finally { audio?.packets?.forEach { it.bytes.fill(0) } }
     }
 
     override suspend fun discard(moment: EncodedMoment) = withContext(Dispatchers.IO) {
@@ -29,10 +39,11 @@ class AndroidProxyMovieEncoder(
         check(!file.exists() || file.delete()) { "Unable to delete staged moment" }
     }
 
-    private fun encodeToFile(asset: OwnedRescueAsset, output: File): EncodedMoment {
+    private fun encodeToFile(asset: OwnedRescueAsset, output: File, audio: EncodedAudio?, job: Job?): EncodedMoment {
         val first = asset.frames.first()
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val muxer = try { MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4) }
+        catch (error: Exception) { codec.release(); throw error }
         var codecStarted = false
         var codecStopped = false
         var muxerStopped = false
@@ -48,20 +59,21 @@ class AndroidProxyMovieEncoder(
             muxer.setOrientationHint(asset.rotationDegrees)
             codec.start()
             codecStarted = true
-            val drain = CodecDrain(codec, muxer)
+            val drain = CodecDrain(codec, muxer, audio, job)
             val pixels = IntArray(first.width * first.height)
             val i420 = I420Buffer(first.width, first.height)
-            val firstTimestampUs = first.timestampUs
+            val firstTimestampUs = if (audio != null) asset.requestStartUs else first.timestampUs
 
             asset.frames.forEach { frame ->
+                job?.ensureActive()
                 decodeInto(frame, pixels)
                 JpegToI420.convertArgb(pixels, frame.width, frame.height, i420)
-                queueInput(codec, i420.bytes, frame.timestampUs - firstTimestampUs, flags = 0)
+                queueInput(codec, i420.bytes, frame.timestampUs - firstTimestampUs, flags = 0, drain, job)
                 drain.drain(endOfStream = false)
             }
 
             val durationUs = asset.requestEndUs - asset.requestStartUs
-            queueInput(codec, EMPTY_INPUT, durationUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            queueInput(codec, EMPTY_INPUT, durationUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM, drain, job)
             drain.drain(endOfStream = true)
             codec.stop()
             codecStopped = true
@@ -91,10 +103,15 @@ class AndroidProxyMovieEncoder(
         bytes: ByteArray,
         presentationTimeUs: Long,
         flags: Int,
+        drain: CodecDrain,
+        job: Job?,
     ) {
+        val startedNs = System.nanoTime()
         while (true) {
+            job?.ensureActive()
+            check(System.nanoTime() - startedNs < 5_000_000_000) { "Video encoder input stalled" }
             val inputIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
-            if (inputIndex < 0) continue
+            if (inputIndex < 0) { drain.drain(endOfStream = false); continue }
             val input = checkNotNull(codec.getInputBuffer(inputIndex))
             input.clear()
             check(input.remaining() >= bytes.size) { "Encoder input buffer is too small" }
@@ -126,6 +143,10 @@ class AndroidProxyMovieEncoder(
     }
 
     private fun validate(asset: OwnedRescueAsset) {
+        require(!requireAudio || asset.audio != null) { "Microphone audio is required" }
+        asset.audio?.let {
+            require(kotlin.math.abs(it.durationUs - (asset.requestEndUs - asset.requestStartUs)) <= 1_000)
+        }
         require(asset.coverageComplete)
         require(asset.frames.isNotEmpty())
         require(asset.requestEndUs > asset.requestStartUs)

@@ -27,7 +27,7 @@ class ReleaseJourneyTest {
     }
 
     @Test
-    fun installedAppRequiresOnlyCameraAndDoesNotBackUpMediaMetadata() {
+    fun installedAppRequiresCameraAndMicrophoneAndDoesNotBackUpMediaMetadata() {
         val context = compose.activity
         val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
         val dangerousOrNetwork = info.requestedPermissions.orEmpty().filter {
@@ -38,7 +38,7 @@ class ReleaseJourneyTest {
                 it == Manifest.permission.RECORD_AUDIO ||
                 it == Manifest.permission.CAMERA
         }
-        assertEquals(listOf(Manifest.permission.CAMERA), dangerousOrNetwork)
+        assertEquals(setOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO), dangerousOrNetwork.toSet())
         assertFalse(context.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP != 0)
     }
 }

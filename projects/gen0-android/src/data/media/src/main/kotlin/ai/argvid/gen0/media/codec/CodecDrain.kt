@@ -2,10 +2,15 @@ package ai.argvid.gen0.media.codec
 
 import android.media.MediaCodec
 import android.media.MediaMuxer
+import java.nio.ByteBuffer
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 
 internal class CodecDrain(
     private val codec: MediaCodec,
     private val muxer: MediaMuxer,
+    private val audio: EncodedAudio? = null,
+    private val job: Job? = null,
 ) {
     var muxerStarted: Boolean = false
         private set
@@ -15,6 +20,7 @@ internal class CodecDrain(
         val info = MediaCodec.BufferInfo()
         var emptyPolls = 0
         while (true) {
+            job?.ensureActive()
             when (val outputIndex = codec.dequeueOutputBuffer(info, OUTPUT_TIMEOUT_US)) {
                 MediaCodec.INFO_TRY_AGAIN_LATER -> {
                     if (!endOfStream) return
@@ -25,8 +31,16 @@ internal class CodecDrain(
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     check(!muxerStarted) { "Encoder output format changed twice" }
                     trackIndex = muxer.addTrack(codec.outputFormat)
+                    val audioTrack = audio?.let { muxer.addTrack(it.format) }
                     muxer.start()
                     muxerStarted = true
+                    if (audioTrack != null) audio.packets.forEach { packet ->
+                        job?.ensureActive()
+                        val audioInfo = MediaCodec.BufferInfo().apply {
+                            set(0, packet.bytes.size, packet.timeUs, packet.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM.inv())
+                        }
+                        muxer.writeSampleData(audioTrack, ByteBuffer.wrap(packet.bytes), audioInfo)
+                    }
                 }
 
                 else -> if (outputIndex >= 0) {

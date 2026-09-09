@@ -1,5 +1,8 @@
 package ai.argvid.gen0.session
 
+import ai.argvid.gen0.domain.detection.AutomaticRecordingDecision
+import ai.argvid.gen0.domain.detection.DetectionSensitivity
+import ai.argvid.gen0.domain.detection.SubjectLabel
 import ai.argvid.gen0.domain.gimbal.GimbalConnectionState
 import ai.argvid.gen0.domain.gimbal.GimbalMotionState
 import ai.argvid.gen0.domain.session.SessionState
@@ -8,6 +11,14 @@ data class GimbalUiState(
     val connection: GimbalConnectionState = GimbalConnectionState.Disconnected,
     val motion: GimbalMotionState = GimbalMotionState.Idle,
     val temperatureC: Double = 0.0,
+)
+
+data class SubjectDetectionUiState(
+    val detectorAvailable: Boolean = false,
+    val labels: Set<SubjectLabel> = emptySet(),
+    val personSensitivity: DetectionSensitivity = DetectionSensitivity.DEFAULT,
+    val faceSensitivity: DetectionSensitivity = DetectionSensitivity.DEFAULT,
+    val lastDecision: AutomaticRecordingDecision? = null,
 )
 
 data class SessionUiState(
@@ -26,6 +37,8 @@ data class SessionUiState(
     val showCleanupFailure: Boolean = false,
     val permissionRequest: AppPermission? = null,
     val resumeConfirmationRequired: Boolean = false,
+    val gimbalNotice: String? = null,
+    val subjectDetection: SubjectDetectionUiState = SubjectDetectionUiState(),
 )
 
 sealed interface SessionAction {
