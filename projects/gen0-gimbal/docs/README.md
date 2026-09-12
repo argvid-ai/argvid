@@ -1,5 +1,7 @@
 # Interface and usage
 
+The complete API reference — BLE GATT boundary, the full JSON command/event tables, caller-visible L0 safety behaviors, the web console HTTP endpoints (with token auth), and the Python/C++ library API — lives in [API.md](API.md). The sections below are the compact overview.
+
 ## BLE interface contract (project-local, not canonical L2)
 
 GATT service `0000ff00-0000-1000-8000-00805f9b34fb`, advertised name `F32C-Gimbal`:
