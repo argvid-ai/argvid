@@ -36,6 +36,16 @@ MotorResponse GimbalController::_axisSetSpeed(bool isPan, int16_t rpm) {
     return _motor->setSpeed(rpm);
 }
 
+MotorResponse GimbalController::_axisSetMultiAngle(bool isPan, float degree, bool wait_response) {
+    _motor->setAddr(isPan ? _panAddr : _tiltAddr);
+    return _motor->setMultiAngle(degree, wait_response);
+}
+
+MotorResponse GimbalController::_axisClearTotal(bool isPan) {
+    _motor->setAddr(isPan ? _panAddr : _tiltAddr);
+    return _motor->clearTotalAngle();
+}
+
 MotorResponse GimbalController::_axisSetSingleAngle(bool isPan, float degree) {
     _motor->setAddr(isPan ? _panAddr : _tiltAddr);
     return _motor->setSingleAngle(degree);
@@ -72,7 +82,9 @@ MotorResponse GimbalController::jog(const String& axis, int8_t dir, uint16_t spe
     return _axisSetSpeed(isPan, target);
 }
 
-// ---------------- 位置随动（单圈绝对位置 T 型规划） ----------------
+// ---------------- 位置随动（多圈位置 T 型规划，相对原点带符号角度） ----------------
+// 单圈模式在 0/360 过零附近会绕远路，故改用多圈模式：
+// APP 维护相对原点的目标角（原点 = origin() 执行时刻的位置），带符号直发。
 MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool hasTilt) {
     MotorResponse r;
     r.valid = true;
@@ -87,9 +99,9 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     if (hasPan) {
         if (pan > 180.0f)  pan = 180.0f;
         if (pan < -180.0f) pan = -180.0f;
-        if (_panMode != 2) {
+        if (_panMode != 1) {
             // P1-5：切模式/使能失败即返回失败且不写缓存
-            MotorResponse rm = _axisSetMode(true, 2);
+            MotorResponse rm = _axisSetMode(true, 1);
             if (!rm.valid) {
                 r.valid = false;
                 r.parsed_text = "pan 切位置模式失败: " + rm.parsed_text;
@@ -101,10 +113,10 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "pan 使能失败: " + re.parsed_text;
                 return r;
             }
-            _panMode = 2;
+            _panMode = 1;
         }
-        // 负角度自动转换：-45° → 315°（协议仅收 [0,360)）
-        MotorResponse rp = _axisSetSingleAngle(true, fmodf(pan + 360.0f, 360.0f));
+        // 不等回帧：pan 帧发出后立即发 tilt，保证两轴同时起步
+        MotorResponse rp = _axisSetMultiAngle(true, pan, false);
         if (rp.valid) _panAngle = pan;
         r.valid = r.valid && rp.valid;
         r.parsed_text += "pan " + String(pan, 1) + "° " + (rp.valid ? "OK" : ("✗ " + rp.parsed_text)) + " ";
@@ -112,9 +124,9 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     if (hasTilt) {
         if (tilt > 90.0f)  tilt = 90.0f;
         if (tilt < -90.0f) tilt = -90.0f;
-        if (_tiltMode != 2) {
+        if (_tiltMode != 1) {
             // P1-5：切模式/使能失败即返回失败且不写缓存
-            MotorResponse rm = _axisSetMode(false, 2);
+            MotorResponse rm = _axisSetMode(false, 1);
             if (!rm.valid) {
                 r.valid = false;
                 r.parsed_text = "tilt 切位置模式失败: " + rm.parsed_text;
@@ -126,9 +138,9 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "tilt 使能失败: " + re.parsed_text;
                 return r;
             }
-            _tiltMode = 2;
+            _tiltMode = 1;
         }
-        MotorResponse rt = _axisSetSingleAngle(false, fmodf(tilt + 360.0f, 360.0f));
+        MotorResponse rt = _axisSetMultiAngle(false, tilt, false);
         if (rt.valid) _tiltAngle = tilt;
         r.valid = r.valid && rt.valid;
         r.parsed_text += "tilt " + String(tilt, 1) + "° " + (rt.valid ? "OK" : ("✗ " + rt.parsed_text));
@@ -137,9 +149,30 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     return r;
 }
 
-// ---------------- 双轴回中 ----------------
+// ---------------- 双轴回中（原点 0°） ----------------
 MotorResponse GimbalController::center() {
     return move(0.0f, 0.0f, true, true);
+}
+
+// ---------------- 双轴当前位置记为多圈原点 ----------------
+MotorResponse GimbalController::origin() {
+    MotorResponse r;
+    if (!ready()) {
+        r.parsed_text = "云台未配置：请先扫描电机或 gimbal_config";
+        return r;
+    }
+    MotorResponse r1 = _axisClearTotal(true);
+    MotorResponse r2 = _axisClearTotal(false);
+    if (r1.valid && r2.valid) {
+        _panAngle = 0.0f;
+        _tiltAngle = 0.0f;
+        r.valid = true;
+        r.parsed_text = "两轴当前位置已记为原点（0°），后续位置控制以此为基准";
+    } else {
+        r.valid = false;
+        r.parsed_text = "设置原点失败: pan=" + r1.parsed_text + " tilt=" + r2.parsed_text;
+    }
+    return r;
 }
 
 // ---------------- 双轴设零点 ----------------
@@ -207,16 +240,19 @@ void GimbalController::invalidateAxis(uint8_t addr) {
 const char* GimbalController::checkAngleLimit(uint8_t addr, float angle, bool multiTurn) const {
     if (_tiltAddr != 0 && addr == _tiltAddr) {
         if (multiTurn) {
-            // 多圈角度的圈数基准不受 ±90° 限位保护，限位轴直接拒绝（显式报错，不静默降级）
-            return "tilt 为限位轴（±90°），拒绝多圈角度命令：请使用单圈角度或云台 move";
-        }
-        // 单圈 [0,360) 折算 ±180 表示法后校验 ±90°
-        float a = (angle > 180.0f) ? (angle - 360.0f) : angle;
-        if (a > 90.0f || a < -90.0f) {
-            return "tilt 轴限位 ±90°：拒绝越界目标角（显式报错，不做静默裁剪）";
+            // 多圈模式：angle 为相对原点的带符号角，直接校验 ±90°（显式报错，不静默降级）
+            if (angle > 90.0f || angle < -90.0f) {
+                return "tilt 轴限位 ±90°：拒绝越界目标角（显式报错，不做静默裁剪）";
+            }
+        } else {
+            // 单圈 [0,360) 折算 ±180 表示法后校验 ±90°
+            float a = (angle > 180.0f) ? (angle - 360.0f) : angle;
+            if (a > 90.0f || a < -90.0f) {
+                return "tilt 轴限位 ±90°：拒绝越界目标角（显式报错，不做静默裁剪）";
+            }
         }
     }
-    // pan 轴 ±180° 覆盖全单圈范围（无限位）；非云台轴的电机不受云台限位约束
+    // pan 轴 ±180° 覆盖全范围（无限位）；非云台轴的电机不受云台限位约束
     return nullptr;
 }
 

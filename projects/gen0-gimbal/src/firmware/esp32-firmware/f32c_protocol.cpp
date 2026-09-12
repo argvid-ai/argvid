@@ -140,7 +140,8 @@ MotorResponse F32CMotor::_doCmd(uint8_t func, const uint8_t* data, size_t len,
     sendFrame(func, data, len);
     if (expect_response) return readResponse(RESP_TIMEOUT_MS);
     MotorResponse r;
-    r.parsed_text = "（不等待响应）";
+    r.valid = true;   // 帧已发出即视为成功（电机收帧即执行）
+    r.parsed_text = "已发送";
     return r;
 }
 
@@ -159,9 +160,13 @@ MotorResponse F32CMotor::setSpeed(int16_t rpm) {
 }
 
 MotorResponse F32CMotor::setMultiAngle(float degree) {
+    return setMultiAngle(degree, true);
+}
+
+MotorResponse F32CMotor::setMultiAngle(float degree, bool expect_response) {
     int32_t v = (int32_t)(degree * 10);
     uint8_t d[4] = {(uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v};
-    return _doCmd(FC_SET_MULTI_ANGLE, d, 4);
+    return _doCmd(FC_SET_MULTI_ANGLE, d, 4, expect_response);
 }
 
 MotorResponse F32CMotor::setSingleAngle(float degree) {

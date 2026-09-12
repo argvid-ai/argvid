@@ -133,6 +133,12 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         _notifyGimbalState();
         return;
     }
+    if (cmdStr == "origin") {
+        MotorResponse r = _gimbal->origin();
+        _notifyResult(r.valid, r.parsed_text);
+        _notifyGimbalState();
+        return;
+    }
     if (cmdStr == "zero") {
         MotorResponse r = _gimbal->zero();
         _notifyResult(r.valid, r.parsed_text);
@@ -158,10 +164,12 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         if (r.valid) _gimbal->invalidateAxis(addr);
     }
     else if (cmdStr == "set_speed") {
-        // P1-3：单电机速度命令加上限（与 jog 一致 ±300 RPM，防爆转）
+        // P1-3：单电机速度命令加上限（防爆转）
         int rpm = doc["rpm"] | 0;
         if (rpm > 300 || rpm < -300) { _notifyResult(false, "速度必须在 ±300 RPM 范围"); return; }
-        r = _motor->setSpeed((int16_t)rpm);
+        int16_t rpm16 = (int16_t)rpm;
+        r = _motor->setSpeed(rpm16);
+        if (r.valid) _params[addr].speed = rpm16;
     }
     else if (cmdStr == "set_angle") {
         float angle = doc["angle"] | 0.0f;
@@ -177,7 +185,20 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         if (deny) { _notifyResult(false, String(deny)); return; }
         r = _motor->setMultiAngle(angle);
     }
-    else if (cmdStr == "set_accel") { r = _motor->setAccel((uint16_t)(doc["accel"] | 0)); }
+    else if (cmdStr == "set_accel") {
+        uint16_t accel = (uint16_t)(doc["accel"] | 0);
+        r = _motor->setAccel(accel);
+        if (r.valid) _params[addr].accel = accel;
+    }
+    else if (cmdStr == "get_params") {
+        // PID/速度配置协议读不回，返回固件缓存的本次会话下发值；
+        // 加速度可实测（RT_ACCEL），实测成功则覆盖缓存
+        MotorParams p = _params[addr];
+        MotorResponse ra = _motor->query(F32CMotor::RT_ACCEL);
+        if (ra.valid && ra.bcc_ok) p.accel = ra.value;
+        _notifyParamsResult(addr, p);
+        return;
+    }
     else if (cmdStr == "query") {
         String type = doc["type"] | "";
         uint8_t code;
@@ -218,10 +239,10 @@ void CmdHandler::_handleMotorCmd(const String& json) {
             return;
         }
     }
-    else if (cmdStr == "set_speed_kp") { r = _motor->setSpeedKp((uint16_t)(doc["val"] | 0)); }
-    else if (cmdStr == "set_speed_ki") { r = _motor->setSpeedKi((uint16_t)(doc["val"] | 0)); }
-    else if (cmdStr == "set_pos_kp")   { r = _motor->setPosKp((uint16_t)(doc["val"] | 0)); }
-    else if (cmdStr == "set_pos_ki")   { r = _motor->setPosKi((uint16_t)(doc["val"] | 0)); }
+    else if (cmdStr == "set_speed_kp") { r = _motor->setSpeedKp((uint16_t)(doc["val"] | 0)); if (r.valid) _params[addr].speed_kp = (uint16_t)(doc["val"] | 0); }
+    else if (cmdStr == "set_speed_ki") { r = _motor->setSpeedKi((uint16_t)(doc["val"] | 0)); if (r.valid) _params[addr].speed_ki = (uint16_t)(doc["val"] | 0); }
+    else if (cmdStr == "set_pos_kp")   { r = _motor->setPosKp((uint16_t)(doc["val"] | 0));   if (r.valid) _params[addr].pos_kp = (uint16_t)(doc["val"] | 0); }
+    else if (cmdStr == "set_pos_ki")   { r = _motor->setPosKi((uint16_t)(doc["val"] | 0));   if (r.valid) _params[addr].pos_ki = (uint16_t)(doc["val"] | 0); }
     else if (cmdStr == "test") {
         String report;
         bool ok = _motor->connectivityTest(report);
@@ -345,6 +366,22 @@ void CmdHandler::_notifyScanResult(MotorInfo* motors, size_t count, bool ok) {
 
 void CmdHandler::_notifyGimbalState() {
     _ble->notifyResponse(_gimbal->stateJson());
+}
+
+void CmdHandler::_notifyParamsResult(uint8_t addr, const MotorParams& p) {
+    // -1 = 本次上电未设置（电机沿用 Flash 内参数，APP 显示"未设置"）
+    JsonDocument doc;
+    doc["event"] = "params_result";
+    doc["addr"] = addr;
+    doc["speed_kp"] = p.speed_kp;
+    doc["speed_ki"] = p.speed_ki;
+    doc["pos_kp"] = p.pos_kp;
+    doc["pos_ki"] = p.pos_ki;
+    doc["accel"] = p.accel;
+    doc["speed"] = p.speed;
+    String out;
+    serializeJson(doc, out);
+    _ble->notifyResponse(out);
 }
 
 void CmdHandler::pushSystemStatus() {

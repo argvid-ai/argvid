@@ -69,6 +69,8 @@ public:
     MotorResponse setMode(uint8_t mode);
     MotorResponse setSpeed(int16_t rpm);
     MotorResponse setMultiAngle(float degree);
+    // expect_response=false：发完不等回帧（云台双轴联动用，保证两轴同时起步）
+    MotorResponse setMultiAngle(float degree, bool expect_response);
     MotorResponse setSingleAngle(float degree);   // 0~359.9
     MotorResponse setAccel(uint16_t accel_rps2);
     MotorResponse query(uint8_t type_code);

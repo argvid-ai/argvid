@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../models/gimbal_state.dart';
 import '../models/motor.dart';
+import '../models/motor_params.dart';
 import '../utils/log_formatter.dart';
 import 'ble_uuids.dart';
 import 'command_sink.dart';
@@ -30,6 +31,9 @@ class BleService extends ChangeNotifier implements CommandSink {
   List<Motor> motors = [];
   bool motorScanning = false;
   int? selectedAddr;
+
+  /// 各电机当前调参状态（get_params 读取结果，按地址索引）
+  Map<int, MotorParams> motorParams = {};
 
   WifiInfo wifi = const WifiInfo();
   GimbalInfo gimbal = const GimbalInfo();
@@ -375,6 +379,13 @@ class BleService extends ChangeNotifier implements CommandSink {
       case 'query_result':
         lastResult = (evt['text'] ?? '').toString();
         lastResultOk = true;
+        break;
+
+      case 'params_result':
+        final addr = (evt['addr'] as num?)?.toInt();
+        if (addr != null) {
+          motorParams[addr] = MotorParams.fromJson(evt);
+        }
         break;
 
       case 'log':

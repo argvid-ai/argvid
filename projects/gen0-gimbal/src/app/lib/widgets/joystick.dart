@@ -1,22 +1,26 @@
 import 'package:flutter/material.dart';
 
-/// 虚拟摇杆圆盘（复刻 Web 版）
+/// 虚拟摇杆圆盘 —— 相对拖动模式
 ///
-/// - 按住拖动 → 输出归一化坐标 panNorm/tiltNorm ∈ [-1, 1]
-/// - 父级负责映射为角度（pan ±180°，tilt ±90°）与 130ms 节流
-/// - 松手回调 onEnd（父级发送最终位置）
+/// - 按下触发 onStart（父级记录当前位置为圆心）
+/// - 拖动输出归一化偏移 panNorm/tiltNorm ∈ [-1,1]（父级映射为相对角度，130ms 节流）
+/// - 松手触发 onEnd（父级发送最终位置），圆盘自动归位
 /// - 可通过 key 调用 reset() 将摇杆归位（回中按钮联动）
 class Joystick extends StatefulWidget {
   const Joystick({
     super.key,
     required this.onMove,
     required this.onEnd,
+    this.onStart,
     this.enabled = true,
     this.size = 220,
   });
 
   final void Function(double panNorm, double tiltNorm) onMove;
   final VoidCallback onEnd;
+
+  /// 按下回调：父级记录拖动起点（当前位置为圆心）
+  final VoidCallback? onStart;
   final bool enabled;
   final double size;
 
@@ -59,6 +63,7 @@ class JoystickState extends State<Joystick> {
         onPointerDown: (e) {
           if (!widget.enabled) return;
           _dragging = true;
+          widget.onStart?.call();
           _update(e.localPosition);
         },
         onPointerMove: (e) {
@@ -68,12 +73,15 @@ class JoystickState extends State<Joystick> {
           if (_dragging) {
             _dragging = false;
             widget.onEnd();
+            // 相对模式：松手后圆盘归位（位置已应用），下次拖动重新从当前开始
+            setState(() => _knob = Offset.zero);
           }
         },
         onPointerCancel: (_) {
           if (_dragging) {
             _dragging = false;
             widget.onEnd();
+            setState(() => _knob = Offset.zero);
           }
         },
         child: Stack(

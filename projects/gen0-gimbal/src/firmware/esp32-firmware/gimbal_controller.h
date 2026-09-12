@@ -24,14 +24,19 @@ public:
     // 扫描到 >=2 台时自动配置（已手动配置过则不覆盖）
     void autoConfig(const MotorInfo* motors, size_t count);
 
-    // 点动：axis "pan"/"tilt"，dir 1/-1/0（0=停止），speed RPM
+    // 点动：axis "pan"/"tilt"，dir 1/-1/0（0=停止），speed RPM（速度模式；App 已改用位置步进，保留作调试接口）
     MotorResponse jog(const String& axis, int8_t dir, uint16_t speed);
 
-    // 位置随动：pan ∈ [-180,180]，tilt ∈ [-90,90]（nan 表示该轴不变）
+    // 位置随动（多圈位置 T 型规划，相对原点带符号角度）：
+    // pan ∈ [-180,180]，tilt ∈ [-90,90]。单圈模式在 0/360 过零附近会绕远路，
+    // 故用多圈模式；原点 = origin() 执行时刻的位置。
     MotorResponse move(float pan, float tilt, bool hasPan, bool hasTilt);
 
     // 双轴回中 0°
     MotorResponse center();
+
+    // 双轴当前位置记为多圈原点（清多圈总角度，位置控制以此为基准）
+    MotorResponse origin();
 
     // 双轴当前位置设为单圈 0°（需再 saveParams 才掉电保存）
     MotorResponse zero();
@@ -45,8 +50,9 @@ public:
     void invalidateAxis(uint8_t addr);
 
     // P1-3 云台轴角度限位检查：返回 nullptr=允许；非空=拒绝原因。
-    // tilt 轴（限位 ±90°）：单圈目标角折算 ±180 表示法校验；多圈命令直接拒绝。
-    // pan 轴 ±180° 覆盖全单圈范围、非云台轴不受限。
+    // tilt 轴（限位 ±90°）：单圈目标角折算 ±180 表示法校验；多圈命令按相对
+    // 原点的带符号角度校验（多圈位置模式下 tilt 也受限位约束）。pan 轴
+    // ±180° 覆盖全范围、非云台轴不受限。
     const char* checkAngleLimit(uint8_t addr, float angle, bool multiTurn) const;
 
     // 状态 JSON：{"event":"gimbal_state","pan":2,"tilt":3,"pan_angle":30.0,"tilt_angle":-45.0}
@@ -65,6 +71,8 @@ private:
     MotorResponse _axisSetMode(bool isPan, uint8_t mode);   // 带模式缓存
     MotorResponse _axisEnable(bool isPan);
     MotorResponse _axisSetSpeed(bool isPan, int16_t rpm);
+    MotorResponse _axisSetMultiAngle(bool isPan, float degree, bool wait_response);
+    MotorResponse _axisClearTotal(bool isPan);
     MotorResponse _axisSetSingleAngle(bool isPan, float degree);
     MotorResponse _axisSetSingleZero(bool isPan);
 };

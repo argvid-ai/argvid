@@ -12,6 +12,16 @@
 
 #define LOG_RING_SIZE 40      // 串口 TX/RX 日志环形缓冲行数（扫描时 16 地址 × 2 帧 = 32 行）
 
+// 单电机调参缓存（协议无法读回 PID/速度配置值，固件记录本次会话下发的值）
+struct MotorParams {
+    int32_t speed_kp = -1;   // -1 = 本次上电未设置（电机用 Flash 内参数）
+    int32_t speed_ki = -1;
+    int32_t pos_kp = -1;
+    int32_t pos_ki = -1;
+    int32_t accel = -1;      // 加速度可实测，get_params 时以实测覆盖
+    int32_t speed = -1;
+};
+
 class CmdHandler {
 public:
     void begin(F32CMotor* motor, GimbalController* gimbal,
@@ -39,6 +49,9 @@ private:
     uint32_t _lastLogFlush = 0;
     uint16_t _droppedLogs = 0;
 
+    // ---- 调参缓存（按地址索引 1~127） ----
+    MotorParams _params[128];
+
     // ---- 命令处理 ----
     void _handleMotorCmd(const String& json);
     void _handleWifiCmd(const String& json);
@@ -51,6 +64,7 @@ private:
     void _notifyQueryResult(uint8_t addr, const char* type, float value, const String& text);
     void _notifyScanResult(MotorInfo* motors, size_t count, bool ok);
     void _notifyGimbalState();
+    void _notifyParamsResult(uint8_t addr, const MotorParams& p);
 
     // 查询类型名 → 反馈类型码（voltage/speed/total_angle/mech_angle/accel）
     static bool _queryTypeCode(const String& type, uint8_t& code);

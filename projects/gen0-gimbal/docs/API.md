@@ -28,7 +28,7 @@ These are enforced in firmware and cannot be disabled from the app:
 
 - **Disconnect fail-stop (P1-1).** On BLE disconnect the firmware drops all queued commands and forces both axes into speed mode at 0 RPM (holding torque; chosen over `disable` so the vertical axis does not sag under gravity). Commands written while disconnected are discarded. Requires hardware-in-the-loop verification before any safety claim.
 - **Stop bypass (P1-2).** `jog` with `dir=0` is routed through atomic flags around the 12-slot command queue: a stop is never dropped due to a full queue, and stale queued motion commands are flushed so they do not execute after the stop.
-- **Limits (P1-3).** Tilt-axis targets outside ±90° are explicitly rejected with an error (no silent clamping) on `set_angle`; multi-turn commands on the tilt axis are rejected; `set_speed` is capped at ±300 RPM; unknown `jog` axes are rejected. Pan ±180° covers the full single-turn range.
+- **Limits (P1-3).** Tilt-axis targets outside ±90° are explicitly rejected with an error (no silent clamping) on `set_angle`; multi-turn commands on the tilt axis are checked against ±90° in the signed origin-relative coordinate; `set_speed` is capped at ±300 RPM; unknown `jog` axes are rejected. Pan ±180° covers the full single-turn range.
 - **Response validation (P1-4).** A feedback frame whose address does not match the commanded address is a failure (`valid=false`) in both the C++ firmware and the Python library.
 - **Mode cache correctness (P1-5).** Mode/enable failures abort the command with an error instead of reporting success; external `set_mode` / `disable` / `factory_reset` / `setaddr` on a gimbal axis invalidates the cached mode so the next command re-synchronizes.
 
@@ -42,23 +42,25 @@ All motor commands accept an optional `"addr"` (1–127, default `0x02` on the b
 |---|---|---|
 | `scan` | — | Scans bus addresses 1–16 (~2 s). Emits `scan_result`; auto-configures gimbal if ≥2 motors found. |
 | `gimbal_config` | `pan`, `tilt` (1–127) | Sets axis motor IDs. Error if out of range. Emits `gimbal_state`. |
-| `jog` | `axis` (`pan`\|`tilt`), `dir` (1\|-1\|0), `speed` (RPM) | Speed-mode nudge; `dir=0` stops (guaranteed delivery, see §2). Errors: unknown axis, gimbal not configured. Speed clamped to 300 RPM. |
-| `move` | `pan` (−180…180), `tilt` (−90…90) | Single-turn absolute position (T-curve), 0.1° resolution; axes clamp at bounds; negative angles converted internally. Error if gimbal not configured. Emits `gimbal_state`. |
-| `center` | — | `move(0, 0)`. |
+| `jog` | `axis` (`pan`\|`tilt`), `dir` (1\|-1\|0), `speed` (RPM) | Speed-mode nudge (debug interface; the app uses position stepping). `dir=0` stops (guaranteed delivery, see §2). Errors: unknown axis, gimbal not configured. Speed clamped to 300 RPM. |
+| `move` | `pan` (−180…180), `tilt` (−90…90) | **Multi-turn absolute position (mode 1, T-curve)** relative to the origin; 0.1° resolution; axes clamp at bounds; pan/tilt frames are sent back-to-back without waiting for the pan reply so both axes start together. Error if gimbal not configured. Emits `gimbal_state`. |
+| `center` | — | `move(0, 0)` back to the origin. |
+| `origin` | — | Marks both axes' current position as the multi-turn origin (clears accumulated multi-turn angle); subsequent position control is relative to it. |
 | `zero` | — | Sets both axes' current position as single-turn 0°; follow with `save` for persistence. |
 | `enable` / `disable` | — | Motor enable/disable. `disable` on a gimbal axis invalidates its mode cache. |
-| `set_mode` | `mode` (0–4; 0=speed, 2=single-turn T-curve) | Error outside 0–4. Invalidates gimbal axis cache. |
+| `set_mode` | `mode` (0–4; 0=speed, 1=multi-turn position T-curve, 2=single-turn position T-curve) | Error outside 0–4. Invalidates gimbal axis cache. |
 | `set_speed` | `rpm` (−300…300) | Error beyond ±300. |
 | `set_angle` | `angle` [0,360) | Single-turn absolute. Tilt-axis targets beyond ±90° are **rejected** (error, not clamped). |
-| `set_multi_angle` | `angle` | Multi-turn absolute. **Rejected** on the tilt axis. |
-| `set_accel` | `accel` | Acceleration (rev/s²). |
+| `set_multi_angle` | `angle` | Multi-turn absolute (signed, origin-relative). Tilt-axis targets beyond ±90° are **rejected**. |
+| `set_accel` | `accel` | Acceleration (rev/s²). Cached for `get_params`. |
+| `get_params` | — | Returns the session-cached PID/speed/accel values (the protocol cannot read them back; `-1` = not set this power cycle) plus a live-measured acceleration. Emits `params_result`. |
 | `query` | `type`: `voltage`\|`speed`\|`total_angle`\|`mech_angle`\|`accel` | Emits `query_result`. Error on unknown type. |
 | `save` | — | Persist parameters to flash. |
 | `clear_total` | — | Reset accumulated multi-turn angle. |
 | `set_zero` | — | Set current position as single-turn zero (single motor). |
 | `factory_reset` | — | Restore factory defaults. Invalidates gimbal axis cache. |
 | `setaddr` | `new_addr` (1–127) | Change motor bus address; control switches to the new address. |
-| `set_speed_kp` / `set_speed_ki` / `set_pos_kp` / `set_pos_ki` | `val` | PID gains. |
+| `set_speed_kp` / `set_speed_ki` / `set_pos_kp` / `set_pos_ki` | `val` | PID gains. Successful values are cached for `get_params`. |
 | `test` | — | Connectivity test (voltage/mech-angle/speed queries). |
 
 WiFi provisioning (write to FF01): `{"ssid": "...", "pass": "..."}`. Credentials are stored in NVS and auto-reconnect on reboot; no `pass` echo in any event.
@@ -72,6 +74,7 @@ Timeouts: a command whose motor-bus response does not arrive within 500 ms fails
 | `cmd_result` | `ok` (bool), `msg` | Result of one command. |
 | `scan_result` | `ok`, `motors: [{id, volt}]` | One event after the full bus scan. |
 | `query_result` | `addr`, `type`, `value`, `text` | `value` is physical-unit converted (V, RPM, 0.1°-based degrees). |
+| `params_result` | `addr`, `speed_kp`, `speed_ki`, `pos_kp`, `pos_ki`, `accel`, `speed` | Session-cached tuning values; `-1`/`null` = not set this power cycle (motor uses flash parameters); `accel` is live-measured when readable. |
 | `gimbal_state` | `pan`, `tilt`, `pan_angle`, `tilt_angle` | Pushed after gimbal-affecting commands. |
 | `wifi_status` (FF02) | `status`: `disconnected`\|`connecting`\|`connected`, `ip`?, `ssid`?, `rssi`? | On change plus every 5 s while connected. |
 | `sys_status` (FF02) | `ble`, `pan`, `tilt`, `pan_angle`, `tilt_angle` | Every 5 s while a client is connected. |
