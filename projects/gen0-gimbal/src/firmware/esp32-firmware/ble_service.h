@@ -40,6 +40,7 @@ public:
     // 队列：主循环出队执行
     bool popCommand(BleCmdMsg& msg);
     size_t pendingCommands() const;
+    uint32_t takeQueueRejected();
 
     // P1-1：断连事件（蓝牙栈回调置位，主循环消费后执行失联停机）
     bool takeDisconnectEvent();
@@ -66,6 +67,10 @@ private:
 
     std::atomic<bool>    _disconnectPending{false};  // P1-1 断连待处理标志
     std::atomic<uint8_t> _stopFlags{0};              // P1-2 bit0=pan, bit1=tilt
+    std::atomic<uint32_t> _queueRejected{0};         // 队列满时记录丢弃数量
+    std::atomic<uint32_t> _connectionGeneration{0}; // 分包不得跨连接继续发送
+    uint16_t _notifyMessageId = 0;
 
     void _queueCmd(bool isWifi, const String& json);
+    void _notifyJson(BLECharacteristic* characteristic, const String& json);
 };

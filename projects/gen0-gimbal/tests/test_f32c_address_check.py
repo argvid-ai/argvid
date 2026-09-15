@@ -61,6 +61,7 @@ class TestAddressCheck(unittest.TestCase):
         """MotorResponse 字段形状（C++/Python 两端契约）"""
         r = MotorResponse(b"", True, True, 0, 0, "")
         self.assertTrue(r.valid)
+        self.assertFalse(r.device_confirmed)
 
 
 if __name__ == "__main__":

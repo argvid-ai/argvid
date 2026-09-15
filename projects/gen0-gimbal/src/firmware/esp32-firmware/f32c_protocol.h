@@ -8,8 +8,11 @@
 
 // 反馈帧解析结果
 struct MotorResponse {
-    bool    valid = false;      // 是否为合法有效帧
+    // 写入命令无即时 ACK 时，valid 仅表示发送流程完成；不代表执行、到位或保持力矩。
+    // 查询命令中，valid 表示收到并通过校验的反馈帧。
+    bool    valid = false;
     bool    bcc_ok = false;     // BCC 校验是否通过
+    bool    device_confirmed = false; // 仅收到合法反馈帧时为 true
     uint8_t type_code = 0;      // 反馈类型码
     int32_t value = 0;          // 反馈数值（大端 int32）
     String  parsed_text;        // 可读文本
@@ -60,7 +63,7 @@ public:
     void setLogCallback(SerialLogCallback cb) { _logCb = cb; }
 
     // ---- 帧构建/发送/接收 ----
-    void sendFrame(uint8_t func, const uint8_t* data = nullptr, size_t len = 0);
+    bool sendFrame(uint8_t func, const uint8_t* data = nullptr, size_t len = 0);
     MotorResponse readResponse(uint32_t timeout_ms = 500);
 
     // ---- 高层命令（与 Python 接口一一对应） ----
@@ -69,7 +72,8 @@ public:
     MotorResponse setMode(uint8_t mode);
     MotorResponse setSpeed(int16_t rpm);
     MotorResponse setMultiAngle(float degree);
-    // expect_response=false：发完不等回帧（云台双轴联动用，保证两轴同时起步）
+    // F32C 写入类命令通常无即时回帧；expect_response=false 表示仅确认已发送。
+    // 只有 query() 等读取命令等待并校验 RX。
     MotorResponse setMultiAngle(float degree, bool expect_response);
     MotorResponse setSingleAngle(float degree);   // 0~359.9
     MotorResponse setAccel(uint16_t accel_rps2);

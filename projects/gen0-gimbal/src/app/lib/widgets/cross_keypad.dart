@@ -42,7 +42,7 @@ class CrossKeypad extends StatelessWidget {
             SizedBox(width: size + gap),
           ],
         ),
-        SizedBox(height: gap),
+        const SizedBox(height: gap),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -53,13 +53,13 @@ class CrossKeypad extends StatelessWidget {
               onDir: () => onJog('pan', -1),
               onStop: () => onJog('pan', 0),
             ),
-            SizedBox(width: gap),
+            const SizedBox(width: gap),
             _CenterButton(
               size: size,
               enabled: enabled,
               onPressed: onCenter,
             ),
-            SizedBox(width: gap),
+            const SizedBox(width: gap),
             _DirButton(
               size: size,
               label: '→',
@@ -69,7 +69,7 @@ class CrossKeypad extends StatelessWidget {
             ),
           ],
         ),
-        SizedBox(height: gap),
+        const SizedBox(height: gap),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -183,10 +183,12 @@ class _CenterButton extends StatelessWidget {
         style: ElevatedButton.styleFrom(
           backgroundColor: Colors.amber.shade700,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           padding: EdgeInsets.zero,
         ),
-        child: const Text('⌂', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        child: const Text('⌂',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
       ),
     );
   }

@@ -2,6 +2,7 @@
  * ble_service.cpp —— BLE GATT 服务端实现
  */
 #include "ble_service.h"
+#include <ArduinoJson.h>
 
 // FreeRTOS 命令队列（BLE 栈任务 → 主循环）
 static QueueHandle_t s_cmdQueue = nullptr;
@@ -96,12 +97,21 @@ void BleServiceManager::begin(const char* deviceName) {
     BLEDevice::startAdvertising();
 }
 
-// P1-2：轻量停止命令检测（不解析 JSON，避免在蓝牙栈任务做重活）
-// 本仓库 App 用 jsonEncode 生成（键值无空格）；同时容忍手写 JSON 的带空格形式。
-static bool _isJogStop(const String& json) {
-    bool isJog = json.indexOf("\"cmd\":\"jog\"") >= 0 || json.indexOf("\"cmd\": \"jog\"") >= 0;
-    if (!isJog) return false;
-    return json.indexOf("\"dir\":0") >= 0 || json.indexOf("\"dir\": 0") >= 0;
+// P1-2：在回调中只解析停止命令所需的三个字段，避免依赖 JSON 排版和键顺序。
+static bool _parseJogStop(const String& json, bool& isStop, bool& pan, bool& tilt) {
+    isStop = false;
+    pan = false;
+    tilt = false;
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return false;
+    const char* cmd = doc["cmd"] | "";
+    const int dir = doc["dir"] | 99;
+    if (strcmp(cmd, "jog") != 0 || dir != 0) return true;
+    isStop = true;
+    const char* axis = doc["axis"] | "";
+    if (strcmp(axis, "pan") == 0) pan = true;
+    if (strcmp(axis, "tilt") == 0) tilt = true;
+    return true;
 }
 
 void BleServiceManager::_queueCmd(bool isWifi, const String& json) {
@@ -109,11 +119,12 @@ void BleServiceManager::_queueCmd(bool isWifi, const String& json) {
 
     // P1-2：松手停止走原子标志旁路——队列满也不会丢失；同时清空队列中
     // 残留的旧运动命令，保证停止之后不会继续执行它们。
-    if (!isWifi && _isJogStop(json)) {
-        bool pan  = json.indexOf("\"axis\":\"pan\"")  >= 0 || json.indexOf("\"axis\": \"pan\"")  >= 0;
-        bool tilt = json.indexOf("\"axis\":\"tilt\"") >= 0 || json.indexOf("\"axis\": \"tilt\"") >= 0;
-        requestStop(pan, tilt);
-        return;
+    if (!isWifi) {
+        bool isStop, pan, tilt;
+        if (_parseJogStop(json, isStop, pan, tilt) && isStop && (pan || tilt)) {
+            requestStop(pan, tilt);
+            return;
+        }
     }
 
     BleCmdMsg msg;
@@ -121,7 +132,9 @@ void BleServiceManager::_queueCmd(bool isWifi, const String& json) {
     strncpy(msg.json, json.c_str(), sizeof(msg.json) - 1);
     msg.json[sizeof(msg.json) - 1] = '\0';
     // 队列满时丢弃本条非停止命令（jog/move 幂等，App 会重发；停止已走旁路不受影响）
-    xQueueSend(s_cmdQueue, &msg, 0);
+    if (xQueueSend(s_cmdQueue, &msg, 0) != pdTRUE) {
+        _queueRejected.fetch_add(1);
+    }
 }
 
 // 供回调类调用（公开入口）
@@ -139,8 +152,13 @@ size_t BleServiceManager::pendingCommands() const {
     return uxQueueMessagesWaiting(s_cmdQueue);
 }
 
+uint32_t BleServiceManager::takeQueueRejected() {
+    return _queueRejected.exchange(0);
+}
+
 void BleServiceManager::setConnected(bool connected) {
     if (_connected == connected) return;
+    _connectionGeneration.fetch_add(1);
     _connected = connected;
     if (!connected) {
         // P1-1：断连安全——丢弃所有待执行命令（蓝牙栈任务中调用，仅用非阻塞 API），
@@ -178,16 +196,52 @@ bool BleServiceManager::takeStopRequest(bool& pan, bool& tilt) {
 }
 
 void BleServiceManager::notifyResponse(const String& json) {
-    // P1-1：断连后不推送（无订阅者；也避免蓝牙栈对已断句柄操作）
-    if (!_charResp || !_connected) return;
-    // 超长自动截断保护（协议约定单条 < 200B，MTU 247 内）
-    _charResp->setValue((uint8_t*)json.c_str(), json.length());
-    _charResp->notify();
+    _notifyJson(_charResp, json);
 }
 
 void BleServiceManager::notifyStatus(const String& json) {
-    if (!_charStatus || !_connected) return;
-    _charStatus->setValue((uint8_t*)json.c_str(), json.length());
-    _charStatus->notify();
     _statusReadValue = json;   // 同步供 APP 主动 Read
+    _notifyJson(_charStatus, json);
+    // Notify 分包后，Read 仍保留完整 JSON，而不是最后一个二进制分包。
+    if (_charStatus) _charStatus->setValue((uint8_t*)json.c_str(), json.length());
+}
+
+void BleServiceManager::_notifyJson(BLECharacteristic* characteristic, const String& json) {
+    if (!characteristic || !_server || !_connected || json.isEmpty()) return;
+    if (json.length() > 8192) {
+        _notifyJson(_charResp, "{\"event\":\"error\",\"msg\":\"BLE response exceeds 8192 bytes\"}");
+        return;
+    }
+    const uint32_t generation = _connectionGeneration.load();
+    uint16_t mtu = _server->getPeerMTU(_server->getConnId());
+    if (mtu < 23) mtu = 23;
+    if (mtu > BLE_MTU_SIZE) mtu = BLE_MTU_SIZE;
+    const size_t capacity = mtu - 3;
+    if (json.length() <= capacity) {
+        characteristic->setValue((uint8_t*)json.c_str(), json.length());
+        characteristic->notify();
+        return;
+    }
+
+    // 与 App BleJsonReceiver 契约一致：F3 2C + LE uint16(id, offset, total)。
+    // 按 UTF-8 字节分包，接收端收齐才解码；小包继续使用原有 JSON 格式。
+    const uint16_t id = ++_notifyMessageId;
+    const uint16_t total = json.length();
+    const size_t chunkSize = capacity - 8;
+    uint8_t packet[BLE_MTU_SIZE - 3];
+    for (size_t offset = 0; offset < total; offset += chunkSize) {
+        // 每片之间让出执行机会，停止/断链优先于剩余日志。
+        if (!_connected || generation != _connectionGeneration.load() ||
+            _disconnectPending.load() || _stopFlags.load() != 0) return;
+        const size_t remaining = total - offset;
+        const size_t count = remaining < chunkSize ? remaining : chunkSize;
+        packet[0] = 0xF3; packet[1] = 0x2C;
+        packet[2] = id & 0xFF; packet[3] = id >> 8;
+        packet[4] = offset & 0xFF; packet[5] = offset >> 8;
+        packet[6] = total & 0xFF; packet[7] = total >> 8;
+        memcpy(packet + 8, json.c_str() + offset, count);
+        characteristic->setValue(packet, count + 8);
+        characteristic->notify();
+        delay(10);
+    }
 }

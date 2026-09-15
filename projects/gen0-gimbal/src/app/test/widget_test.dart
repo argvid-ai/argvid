@@ -22,7 +22,7 @@ void main() {
     });
 
     test('copyWith 保留未指定字段', () {
-      final g = const GimbalInfo(panId: 2, tiltId: 3, panAngle: 30, tiltAngle: -45);
+      const g = GimbalInfo(panId: 2, tiltId: 3, panAngle: 30, tiltAngle: -45);
       final g2 = g.copyWith(panAngle: 90);
       expect(g2.panId, 2);
       expect(g2.tiltId, 3);
@@ -57,9 +57,9 @@ void main() {
       final p = MotorParams.fromJson({
         'addr': 1,
         'speed_kp': 10,
-        'speed_ki': -1,        // 固件 -1 = 本次未设置
+        'speed_ki': -1, // 固件 -1 = 本次未设置
         'pos_kp': 5,
-        'pos_ki': null,        // JSON null
+        'pos_ki': null, // JSON null
         'accel': 100,
         'speed': 60,
       });

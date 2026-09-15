@@ -34,6 +34,8 @@ class MotorResponse:
     type_code: int
     value: int
     parsed_text: str
+    # 仅合法的电机反馈帧为 True；写入命令的 valid=True 只代表发送完成。
+    device_confirmed: bool = False
 
 
 def calc_bcc(data: bytes) -> int:
@@ -157,17 +159,23 @@ class F32CMotor:
         payload.append(FRAME_TAIL)
         return bytes(payload)
 
-    def _send_frame(self, frame: bytes) -> None:
+    def _send_frame(self, frame: bytes) -> bool:
         """发送一帧（含清缓冲、帧间隔）"""
         assert self._ser, "请先 connect()"
-        self._ser.reset_input_buffer()
-        self._ser.write(frame)
-        self._ser.flush()
+        try:
+            self._ser.reset_input_buffer()
+            written = self._ser.write(frame)
+            self._ser.flush()
+        except (serial.SerialException, OSError) as exc:
+            if self.debug:
+                print(f"[错误] 串口写入失败: {exc}")
+            return False
         # 协议要求帧间至少 1ms
         time.sleep(0.003)
         if self.debug:
             hex_str = " ".join(f"{b:02X}" for b in frame)
             print(f"[TX] {hex_str}")
+        return written == len(frame)
 
     # ------------------------- 底层帧接收 -------------------------
     def _read_response(self, timeout_ms: int = 500) -> MotorResponse:
@@ -237,7 +245,7 @@ class F32CMotor:
             value = 0
 
         text = self._format_feedback(type_code, value)
-        return MotorResponse(raw, True, True, type_code, value, text)
+        return MotorResponse(raw, True, True, type_code, value, text, True)
 
     def _format_feedback(self, type_code: int, value: int) -> str:
         """根据反馈类型解析数值为可读文本"""
@@ -259,21 +267,24 @@ class F32CMotor:
                 expect_response: bool = False) -> MotorResponse:
         """发送命令并（可选）读取响应"""
         frame = self._build_frame(func, data)
-        self._send_frame(frame)
+        if not self._send_frame(frame):
+            return MotorResponse(
+                b"", False, False, 0, 0,
+                "串口未初始化或写入未完成",
+            )
         if expect_response:
             return self._read_response()
-        # 不读响应的情况也尽量清空
-        time.sleep(0.03)
-        if self._ser and self._ser.in_waiting:
-            return self._read_response()
-        return MotorResponse(b"", False, False, 0, 0, "（不等待响应）")
+        return MotorResponse(
+            b"", True, False, 0, 0,
+            "命令已发送（写入命令无即时回包；执行/到位需查询或实机验证）",
+        )
 
     # --- 使能/失能 ---
     def enable(self) -> MotorResponse:
-        return self._do_cmd(self.FC_ENABLE, expect_response=True)
+        return self._do_cmd(self.FC_ENABLE)
 
     def disable(self) -> MotorResponse:
-        return self._do_cmd(self.FC_DISABLE, expect_response=True)
+        return self._do_cmd(self.FC_DISABLE)
 
     # --- 模式 ---
     def set_mode(self, mode: int) -> MotorResponse:
@@ -281,20 +292,20 @@ class F32CMotor:
         if mode not in self.MODES:
             raise ValueError(f"模式 {mode} 不在 0~4 范围内")
         data = bytes([0x00, mode])
-        return self._do_cmd(self.FC_SET_MODE, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_MODE, data)
 
     # --- 速度 ---
     def set_speed(self, rpm: int) -> MotorResponse:
         """速度模式 RPM，支持正负数"""
         data = struct.pack(">h", int(rpm))
-        return self._do_cmd(self.FC_SET_SPEED, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_SPEED, data)
 
     # --- 位置 ---
     def set_multi_angle(self, degree: float) -> MotorResponse:
         """多圈绝对角度（度，精度0.1，需放大10倍传输）"""
         val = int(degree * 10)
         data = struct.pack(">i", val)
-        return self._do_cmd(self.FC_SET_MULTI_ANGLE, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_MULTI_ANGLE, data)
 
     def set_single_angle(self, degree: float) -> MotorResponse:
         """单圈绝对角度（0~359.9 度）"""
@@ -302,13 +313,13 @@ class F32CMotor:
             raise ValueError("单圈角度必须在 [0, 360) 范围")
         val = int(degree * 10)
         data = struct.pack(">h", val)
-        return self._do_cmd(self.FC_SET_SINGLE_ANGLE, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_SINGLE_ANGLE, data)
 
     # --- 加速度 ---
     def set_accel(self, accel_rps2: int) -> MotorResponse:
         """加速度（圈/s²）"""
         data = struct.pack(">H", int(accel_rps2))
-        return self._do_cmd(self.FC_SET_ACCEL, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_ACCEL, data)
 
     # --- 读取反馈 ---
     def read_speed(self) -> MotorResponse:
@@ -328,34 +339,56 @@ class F32CMotor:
 
     # --- 维护 ---
     def save_params(self) -> MotorResponse:
-        return self._do_cmd(self.FC_SAVE_PARAMS, expect_response=True)
+        return self._do_cmd(self.FC_SAVE_PARAMS)
 
     def clear_total_angle(self) -> MotorResponse:
-        return self._do_cmd(self.FC_CLEAR_ANGLE, expect_response=True)
+        sent = self._do_cmd(self.FC_CLEAR_ANGLE)
+        if not sent.valid:
+            return sent
+        time.sleep(0.02)
+        verified = self.read_total_angle()
+        if not verified.valid:
+            return verified
+        if verified.type_code != self.RT_TOTAL_ANGLE:
+            verified.valid = False
+            verified.device_confirmed = False
+            verified.parsed_text = (
+                f"清零验证返回类型错误: 0x{verified.type_code:02X}"
+            )
+            return verified
+        if verified.value != 0:
+            verified.valid = False
+            verified.device_confirmed = False
+            verified.parsed_text = (
+                f"清零验证失败，总角度仍为 {verified.value / 10:.1f} 度"
+            )
+            return verified
+        verified.parsed_text = "总角度已清零（查询确认）"
+        return verified
 
     def set_single_zero(self) -> MotorResponse:
         """把当前位置设为单圈0度（需 save_params 才掉电保存）"""
-        return self._do_cmd(self.FC_SET_SINGLE_ZERO, expect_response=True)
+        return self._do_cmd(self.FC_SET_SINGLE_ZERO)
 
     def factory_reset(self) -> MotorResponse:
-        return self._do_cmd(self.FC_FACTORY_RESET, expect_response=True)
+        return self._do_cmd(self.FC_FACTORY_RESET)
 
     # --- PID ---
     def set_speed_kp(self, v: int) -> MotorResponse:
         data = struct.pack(">H", int(v))
-        return self._do_cmd(self.FC_SPEED_KP, data, expect_response=True)
+        return self._do_cmd(self.FC_SPEED_KP, data)
 
     def set_speed_ki(self, v: int) -> MotorResponse:
         data = struct.pack(">H", int(v))
-        return self._do_cmd(self.FC_SPEED_KI, data, expect_response=True)
+        return self._do_cmd(self.FC_SPEED_KI, data)
 
     def set_pos_kp(self, v: int) -> MotorResponse:
         data = struct.pack(">H", int(v))
-        return self._do_cmd(self.FC_POS_KP, data, expect_response=True)
+        return self._do_cmd(self.FC_POS_KP, data)
 
     def set_pos_ki(self, v: int) -> MotorResponse:
         data = struct.pack(">H", int(v))
-        return self._do_cmd(self.FC_POS_KI, data, expect_response=True)
+        return self._do_cmd(self.FC_POS_KI, data)
 
     # --- 设备地址设置（写进电机 Flash，掉电保持） ---
     def set_device_address(self, new_addr: int) -> MotorResponse:
@@ -370,7 +403,7 @@ class F32CMotor:
         if not (0x01 <= new_addr <= 0x7F):
             raise ValueError("新地址必须在 0x01~0x7F 范围")
         data = bytes([new_addr])
-        return self._do_cmd(self.FC_SET_ADDR, data, expect_response=True)
+        return self._do_cmd(self.FC_SET_ADDR, data)
 
     # ------------------------- 总线扫描（多电机级联） -------------------------
     def scan_bus(self, start: int = 1, end: int = 16,

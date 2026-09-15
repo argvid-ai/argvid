@@ -43,7 +43,8 @@ class _AxisLeverState extends State<AxisLever> {
             SizedBox(
               width: 64,
               child: Text(widget.label,
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.bold)),
             ),
             Expanded(
               child: SliderTheme(

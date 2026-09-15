@@ -28,8 +28,8 @@ String F32CMotor::_toHex(const uint8_t* data, size_t len) {
 }
 
 // ---------------- 发送一帧 ----------------
-void F32CMotor::sendFrame(uint8_t func, const uint8_t* data, size_t len) {
-    if (!_serial) return;
+bool F32CMotor::sendFrame(uint8_t func, const uint8_t* data, size_t len) {
+    if (!_serial) return false;
     uint8_t frame[4 + 16];  // 头+地址+功能码+数据+BCC+尾，数据最长 4
     if (len > 16) len = 16;
 
@@ -43,11 +43,12 @@ void F32CMotor::sendFrame(uint8_t func, const uint8_t* data, size_t len) {
 
     // 清空接收缓冲（与 Python _send_frame 行为一致）
     while (_serial->available()) _serial->read();
-    _serial->write(frame, n);
+    const size_t written = _serial->write(frame, n);
     _serial->flush();
     delay(FRAME_GAP_MS);   // 协议要求帧间至少 1ms
 
     if (_logCb) _logCb("TX", _toHex(frame, n));
+    return written == n;
 }
 
 // ---------------- 接收并解析反馈帧 ----------------
@@ -113,6 +114,7 @@ MotorResponse F32CMotor::_parseResponse(const uint8_t* raw, size_t len) {
     }
 
     r.valid = true;
+    r.device_confirmed = true;
     r.type_code = raw[2];
     // 大端 int32（与 Python struct.unpack(">i") 一致）
     r.value = 0;
@@ -137,30 +139,35 @@ String F32CMotor::_formatFeedback(uint8_t type_code, int32_t value) {
 
 MotorResponse F32CMotor::_doCmd(uint8_t func, const uint8_t* data, size_t len,
                                 bool expect_response) {
-    sendFrame(func, data, len);
+    if (!sendFrame(func, data, len)) {
+        MotorResponse r;
+        r.parsed_text = "串口未初始化或写入未完成";
+        return r;
+    }
     if (expect_response) return readResponse(RESP_TIMEOUT_MS);
     MotorResponse r;
-    r.valid = true;   // 帧已发出即视为成功（电机收帧即执行）
-    r.parsed_text = "已发送";
+    r.valid = true;   // 仅表示发送流程完成，不代表电机执行或到位
+    r.device_confirmed = false;
+    r.parsed_text = "命令已发送（写入命令无即时回包；执行/到位需查询或实机验证）";
     return r;
 }
 
 // ---------------- 高层命令 ----------------
-MotorResponse F32CMotor::enable()             { return _doCmd(FC_ENABLE); }
-MotorResponse F32CMotor::disable()            { return _doCmd(FC_DISABLE); }
+MotorResponse F32CMotor::enable()             { return _doCmd(FC_ENABLE, nullptr, 0, false); }
+MotorResponse F32CMotor::disable()            { return _doCmd(FC_DISABLE, nullptr, 0, false); }
 
 MotorResponse F32CMotor::setMode(uint8_t mode) {
     uint8_t d[2] = {0x00, mode};
-    return _doCmd(FC_SET_MODE, d, 2);
+    return _doCmd(FC_SET_MODE, d, 2, false);
 }
 
 MotorResponse F32CMotor::setSpeed(int16_t rpm) {
     uint8_t d[2] = {(uint8_t)(rpm >> 8), (uint8_t)(rpm & 0xFF)};   // 大端 int16
-    return _doCmd(FC_SET_SPEED, d, 2);
+    return _doCmd(FC_SET_SPEED, d, 2, false);
 }
 
 MotorResponse F32CMotor::setMultiAngle(float degree) {
-    return setMultiAngle(degree, true);
+    return setMultiAngle(degree, false);
 }
 
 MotorResponse F32CMotor::setMultiAngle(float degree, bool expect_response) {
@@ -177,22 +184,45 @@ MotorResponse F32CMotor::setSingleAngle(float degree) {
     }
     int16_t v = (int16_t)(degree * 10);
     uint8_t d[2] = {(uint8_t)(v >> 8), (uint8_t)(v & 0xFF)};
-    return _doCmd(FC_SET_SINGLE_ANGLE, d, 2);
+    return _doCmd(FC_SET_SINGLE_ANGLE, d, 2, false);
 }
 
 MotorResponse F32CMotor::setAccel(uint16_t accel_rps2) {
     uint8_t d[2] = {(uint8_t)(accel_rps2 >> 8), (uint8_t)(accel_rps2 & 0xFF)};
-    return _doCmd(FC_SET_ACCEL, d, 2);
+    return _doCmd(FC_SET_ACCEL, d, 2, false);
 }
 
 MotorResponse F32CMotor::query(uint8_t type_code) {
     return _doCmd(FC_QUERY, &type_code, 1);
 }
 
-MotorResponse F32CMotor::saveParams()        { return _doCmd(FC_SAVE_PARAMS); }
-MotorResponse F32CMotor::clearTotalAngle()  { return _doCmd(FC_CLEAR_ANGLE); }
-MotorResponse F32CMotor::setSingleZero()    { return _doCmd(FC_SET_SINGLE_ZERO); }
-MotorResponse F32CMotor::factoryReset()     { return _doCmd(FC_FACTORY_RESET); }
+MotorResponse F32CMotor::saveParams()        { return _doCmd(FC_SAVE_PARAMS, nullptr, 0, false); }
+
+MotorResponse F32CMotor::clearTotalAngle() {
+    // F32C 的 0x09 是写入类命令：当前电机不会返回与查询命令相同的反馈帧。
+    // 发送后改用总角度查询确认状态，避免把“无 ACK”误报为“帧太短”。
+    MotorResponse sent = _doCmd(FC_CLEAR_ANGLE, nullptr, 0, false);
+    if (!sent.valid) return sent;
+
+    // 给电机控制器一点时间提交清零，再发查询帧。sendFrame() 已清空旧接收数据。
+    delay(20);
+    MotorResponse verified = query(RT_TOTAL_ANGLE);
+    if (!verified.valid) return verified;
+    if (verified.type_code != RT_TOTAL_ANGLE) {
+        verified.valid = false;
+        verified.parsed_text = "清零验证返回类型错误: 0x" + String(verified.type_code, HEX);
+        return verified;
+    }
+    if (verified.value != 0) {
+        verified.valid = false;
+        verified.parsed_text = "清零验证失败，总角度仍为 " + String(verified.value / 10.0, 1) + " 度";
+        return verified;
+    }
+    verified.parsed_text = "总角度已清零（查询确认）";
+    return verified;
+}
+MotorResponse F32CMotor::setSingleZero()    { return _doCmd(FC_SET_SINGLE_ZERO, nullptr, 0, false); }
+MotorResponse F32CMotor::factoryReset()     { return _doCmd(FC_FACTORY_RESET, nullptr, 0, false); }
 
 MotorResponse F32CMotor::setDeviceAddress(uint8_t new_addr) {
     MotorResponse r;
@@ -200,13 +230,13 @@ MotorResponse F32CMotor::setDeviceAddress(uint8_t new_addr) {
         r.parsed_text = "新地址必须在 0x01~0x7F 范围";
         return r;
     }
-    return _doCmd(FC_SET_ADDR, &new_addr, 1);
+    return _doCmd(FC_SET_ADDR, &new_addr, 1, false);
 }
 
-MotorResponse F32CMotor::setSpeedKp(uint16_t v) { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_SPEED_KP, d, 2); }
-MotorResponse F32CMotor::setSpeedKi(uint16_t v) { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_SPEED_KI, d, 2); }
-MotorResponse F32CMotor::setPosKp(uint16_t v)   { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_POS_KP, d, 2); }
-MotorResponse F32CMotor::setPosKi(uint16_t v)   { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_POS_KI, d, 2); }
+MotorResponse F32CMotor::setSpeedKp(uint16_t v) { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_SPEED_KP, d, 2, false); }
+MotorResponse F32CMotor::setSpeedKi(uint16_t v) { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_SPEED_KI, d, 2, false); }
+MotorResponse F32CMotor::setPosKp(uint16_t v)   { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_POS_KP, d, 2, false); }
+MotorResponse F32CMotor::setPosKi(uint16_t v)   { uint8_t d[2] = {(uint8_t)(v>>8),(uint8_t)v}; return _doCmd(FC_POS_KI, d, 2, false); }
 
 // ---------------- 总线扫描 ----------------
 size_t F32CMotor::scanBus(uint8_t start, uint8_t end, MotorInfo* out, size_t out_max,

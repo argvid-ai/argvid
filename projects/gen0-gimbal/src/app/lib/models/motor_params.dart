@@ -1,7 +1,7 @@
 /// 单电机调参状态（对应固件 get_params 返回）
 ///
-/// 协议读不回 PID/速度配置值：固件只缓存本次上电下发的值，
-/// null = 本次未设置（电机沿用 Flash 内参数）。
+/// 协议读不回 PID/速度配置值：固件返回本次下发或网关 NVS 恢复的值，
+/// null = 没有可见的运行参数快照。
 /// accel 加速度为实测值。
 class MotorParams {
   final int? speedKp;
@@ -26,6 +26,7 @@ class MotorParams {
       if (raw is num && raw >= 0) return raw.toInt();
       return null;
     }
+
     return MotorParams(
       speedKp: v('speed_kp'),
       speedKi: v('speed_ki'),

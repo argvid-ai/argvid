@@ -13,9 +13,9 @@ Future<void> showLogPanel(BuildContext context) {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
-    builder: (ctx) => SizedBox(
+    builder: (ctx) => const SizedBox(
       height: 420,
-      child: const LogPanel(),
+      child: LogPanel(),
     ),
   );
 }
@@ -54,7 +54,8 @@ class LogPanel extends StatelessWidget {
                 onPressed: ble.clearLogs,
                 icon: const Icon(Icons.delete_sweep, size: 16),
                 label: const Text('清空', style: TextStyle(fontSize: 12)),
-                style: TextButton.styleFrom(foregroundColor: Colors.grey.shade400),
+                style:
+                    TextButton.styleFrom(foregroundColor: Colors.grey.shade400),
               ),
             ],
           ),

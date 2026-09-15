@@ -14,21 +14,23 @@ App unit tests (from `projects/gen0-gimbal/src/app`, requires the Flutter stable
 
 ## What the tests actually cover
 
-Python unit tests (`tests/test_f32c_address_check.py`, `tests/test_web_security.py`):
+Python unit tests (`tests/test_f32c_address_check.py`, `tests/test_web_security.py`, `tests/test_result_semantics.py`):
 
 - Review fix P1-4: feedback frames with a mismatched address are rejected (`valid=false`) in the Python reference protocol, with the success path, short-frame, and bad-BCC paths as controls.
 - Review fix P1-6: concurrent `_send_axis` transactions are atomic — a deterministic two-thread interleaving test asserts no `set_addr` from one axis can execute between another axis's `set_addr` and its command (the wrong-axis reproduction from the review fails without the lock).
 - Review fix P1-7: every `/api/*` call requires the per-launch token (query or `X-Auth-Token` header); wrong/missing tokens get 401 including state-changing endpoints; the rendered page carries the injected token; the default bind address is loopback-only.
+- Result semantics: write-only commands report transport success without device confirmation; short serial writes fail; valid address-matched feedback sets `device_confirmed=true`.
 
 App unit tests (`src/app/test/`):
 
 - `test/widget_test.dart` — model and utility behavior: `Motor`/`GimbalInfo`/`WifiInfo` fields and `copyWith`, `MotorParams` decoding (`-1`/null → unset) and summary, hex log formatting, direction colors.
+- `test/ble_json_receiver_test.dart` — 13 local receiver regressions: empty initial value, legacy JSON, 40-line scan logs at MTU 23/247, split UTF-8, invalid/truncated/missing/repeated fragments, recovery, timeout, disconnect reset, separate FF02/FF04 assembly and size bounds. This exercises the production Dart receiver with wire-format fixtures; it does not simulate the BLE radio or execute the C++ sender.
 - `test/gimbal_controller_test.dart` — app control behavior (multi-turn position mode): keypad position stepping (`move`, no command on release), step accumulation and clamping, relative joystick dragging (center-recall + 130 ms throttling + final-position send on release), single-axis levers with clamping, one-decimal rounding, center/origin command and state reset, and the motion-speed sequence (set_mode/enable/set_speed per axis + move, skipped for unconfigured axes).
 
 Not covered by these tests (no claim made): BLE transport (scan/connect/notify dispatch), firmware execution on hardware (including the P1-1 disconnect stop, P1-2 stop bypass, P1-3 firmware-side limit enforcement, and P1-5 mode-cache behavior in C++, which would need host-compilable firmware logic harnesses or hardware-in-the-loop runs), and physical gimbal motion. Those remain pending; the C++ side is currently verified by compilation with the pinned toolchain plus the documented device acceptance checklist.
 
 ## Evidence status
 
-- Python compile check, `flutter test` (24 tests), and the Python unit tests (13 tests): passing on the authoring host (Python 3.12.12, Flutter stable, Windows) and run in CI on every pull request via `.github/workflows/gimbal.yml`.
+- Python compile check, `flutter test` (24 tests), and the Python unit tests (16 tests): the result-semantics changes require re-running these checks before they can be marked passing for this repair snapshot; CI coverage applies to the public revision, not this uncommitted repair copy.
 - Firmware compile: verified on the authoring host with the pinned toolchain (arduino-cli 1.5.1, esp32 core 3.3.11, ArduinoJson 7.4.3, FQBN `esp32:esp32:esp32s3:CDCOnBoot=cdc`) — 1,144,705 bytes flash (87%), 50,484 bytes RAM (15%); also compiled in CI. Not flashed to hardware in this delivery.
 - Real-device firmware flash, BLE end-to-end integration, and hardware-in-the-loop motion/safety tests (including the disconnect fail-stop mechanism and jog position limiting): pending, never passed. Host checks do not certify hardware safety.

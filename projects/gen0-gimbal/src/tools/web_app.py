@@ -103,7 +103,7 @@ def _send_axis(axis: str, method: str, *args):
     with motor_lock:
         motor.set_addr(GIMBAL[f"{axis}_addr"])
         r = getattr(motor, method)(*args)
-    add_log(f"[云台][{axis}] {method}({', '.join(str(a) for a in args)}) -> {'OK' if r.valid else r.parsed_text}")
+    add_log(f"[云台][{axis}] {method}({', '.join(str(a) for a in args)}) -> {r.parsed_text if r.valid else '失败: ' + r.parsed_text}")
     return r
 
 
@@ -1462,7 +1462,7 @@ def api_gimbal_move():
                 GIMBAL["pan_mode"] = 2
             r = _send_axis("pan", "set_single_angle", round(pan % 360, 1))
             if r.valid: GIMBAL["pan_angle"] = pan
-            sent.append(f"水平 {pan:+.1f}°{'✓' if r.valid else '✗'}")
+            sent.append(f"水平目标 {pan:+.1f}°{'已确认' if r.valid else '发送/确认失败'}")
         if tilt is not None:
             tilt = max(-90.0, min(90.0, tilt))
             if GIMBAL["tilt_mode"] != 2:
@@ -1471,7 +1471,7 @@ def api_gimbal_move():
                 GIMBAL["tilt_mode"] = 2
             r = _send_axis("tilt", "set_single_angle", round(tilt % 360, 1))
             if r.valid: GIMBAL["tilt_angle"] = tilt
-            sent.append(f"垂直 {tilt:+.1f}°{'✓' if r.valid else '✗'}")
+            sent.append(f"垂直目标 {tilt:+.1f}°{'已确认' if r.valid else '发送/确认失败'}")
         return resp(True, " · ".join(sent) if sent else "无参数",
                     pan_angle=GIMBAL["pan_angle"], tilt_angle=GIMBAL["tilt_angle"])
     except Exception as e:
@@ -1492,7 +1492,7 @@ def api_gimbal_center():
             _send_axis(axis, "set_single_angle", 0)
             GIMBAL[f"{axis}_angle"] = 0.0
         add_log("[云台] 双轴回中")
-        return resp(True, "双轴已回中 (0°)")
+        return resp(True, "双轴回中目标已发送（到位未确认）")
     except Exception as e:
         return resp(False, f"回中失败: {e}")
 
@@ -1508,7 +1508,7 @@ def api_gimbal_zero():
         if r1.valid and r2.valid:
             GIMBAL["pan_angle"] = 0.0
             GIMBAL["tilt_angle"] = 0.0
-            return resp(True, "两轴当前位置已设为 0°，建议再点「保存参数」永久写入")
+            return resp(True, "两轴设零命令已发送（执行未由反馈确认），建议再点「保存参数」永久写入")
         return resp(False, f"设零点失败: pan={r1.parsed_text} tilt={r2.parsed_text}")
     except Exception as e:
         return resp(False, f"设零点失败: {e}")

@@ -1,11 +1,23 @@
 /**
- * gimbal_controller.cpp —— 云台双轴控制实现（逻辑与 Python web_app.py 完全一致）
+ * gimbal_controller.cpp —— 云台双轴多圈位置控制与实测位置保护
  */
 #include "gimbal_controller.h"
 
 void GimbalController::config(uint8_t pan_id, uint8_t tilt_id) {
     _panAddr = pan_id;
     _tiltAddr = tilt_id;
+    _panMode = -1;
+    _tiltMode = -1;
+}
+
+void GimbalController::rememberSpeed(uint8_t addr, int16_t rpm) {
+    // 位置模式速度只接受非负上限；速度模式的负向点动不应污染它。
+    if (rpm < 0) return;
+    if (_panAddr != 0 && addr == _panAddr) _panSpeed = rpm;
+    if (_tiltAddr != 0 && addr == _tiltAddr) _tiltSpeed = rpm;
+}
+
+void GimbalController::invalidateAllModes() {
     _panMode = -1;
     _tiltMode = -1;
 }
@@ -85,7 +97,7 @@ MotorResponse GimbalController::jog(const String& axis, int8_t dir, uint16_t spe
 // ---------------- 位置随动（多圈位置 T 型规划，相对原点带符号角度） ----------------
 // 单圈模式在 0/360 过零附近会绕远路，故改用多圈模式：
 // APP 维护相对原点的目标角（原点 = origin() 执行时刻的位置），带符号直发。
-MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool hasTilt) {
+MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool hasTilt, int16_t position_speed) {
     MotorResponse r;
     r.valid = true;
     r.parsed_text = "";
@@ -95,12 +107,34 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
         r.parsed_text = "云台未配置：请先扫描电机或 gimbal_config";
         return r;
     }
+    if ((hasPan && !isfinite(pan)) || (hasTilt && !isfinite(tilt))) {
+        r.valid = false;
+        r.parsed_text = "位置目标必须是有限角度";
+        return r;
+    }
+    if (pan > 180.0f) pan = 180.0f;
+    if (pan < -180.0f) pan = -180.0f;
+    if (tilt > 90.0f) tilt = 90.0f;
+    if (tilt < -90.0f) tilt = -90.0f;
+    float currentPan = 0.0f;
+    MotorResponse safe = positionSafety(hasPan, hasTilt, &currentPan);
+    if (!safe.valid) return safe;
+    if (position_speed >= 0) {
+        if (position_speed > 300) position_speed = 300;
+        if (hasPan) _panSpeed = position_speed;
+        if (hasTilt) _tiltSpeed = position_speed;
+    }
+    // Derive the nearest equivalent from this request's measured position.
+    // No turn offset survives a motor-only reboot.
+    const float panTarget = pan + roundf((currentPan - pan) / 360.0f) * 360.0f;
 
     if (hasPan) {
         if (pan > 180.0f)  pan = 180.0f;
         if (pan < -180.0f) pan = -180.0f;
-        if (_panMode != 1) {
-            // P1-5：切模式/使能失败即返回失败且不写缓存
+        {
+            // The motor can reboot independently of the gateway. Re-prepare on
+            // every explicit position transaction; there is no F32C mode/status
+            // readback with which to safely trust this cache.
             MotorResponse rm = _axisSetMode(true, 1);
             if (!rm.valid) {
                 r.valid = false;
@@ -113,19 +147,26 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "pan 使能失败: " + re.parsed_text;
                 return r;
             }
+            MotorResponse rs = _axisSetSpeed(true, _panSpeed);
+            if (!rs.valid) {
+                r.valid = false;
+                r.parsed_text = "pan 位置速度恢复失败: " + rs.parsed_text;
+                return r;
+            }
             _panMode = 1;
         }
-        // 不等回帧：pan 帧发出后立即发 tilt，保证两轴同时起步
-        MotorResponse rp = _axisSetMultiAngle(true, pan, false);
+        // F32C 位置写入没有即时回包；这里仅报告目标帧已发送，
+        // 到位状态需通过后续 query 或实机观察确认。
+        MotorResponse rp = _axisSetMultiAngle(true, panTarget, false);
         if (rp.valid) _panAngle = pan;
         r.valid = r.valid && rp.valid;
-        r.parsed_text += "pan " + String(pan, 1) + "° " + (rp.valid ? "OK" : ("✗ " + rp.parsed_text)) + " ";
+        r.parsed_text += "pan " + String(pan, 1) + "° " + (rp.valid ? "目标已发送（到位未确认）" : ("✗ " + rp.parsed_text)) + " ";
     }
     if (hasTilt) {
         if (tilt > 90.0f)  tilt = 90.0f;
         if (tilt < -90.0f) tilt = -90.0f;
-        if (_tiltMode != 1) {
-            // P1-5：切模式/使能失败即返回失败且不写缓存
+        {
+            // See pan: motor-only power cycles are not observable by ESP32.
             MotorResponse rm = _axisSetMode(false, 1);
             if (!rm.valid) {
                 r.valid = false;
@@ -138,20 +179,51 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "tilt 使能失败: " + re.parsed_text;
                 return r;
             }
+            MotorResponse rs = _axisSetSpeed(false, _tiltSpeed);
+            if (!rs.valid) {
+                r.valid = false;
+                r.parsed_text = "tilt 位置速度恢复失败: " + rs.parsed_text;
+                return r;
+            }
             _tiltMode = 1;
         }
         MotorResponse rt = _axisSetMultiAngle(false, tilt, false);
         if (rt.valid) _tiltAngle = tilt;
         r.valid = r.valid && rt.valid;
-        r.parsed_text += "tilt " + String(tilt, 1) + "° " + (rt.valid ? "OK" : ("✗ " + rt.parsed_text));
+        r.parsed_text += "tilt " + String(tilt, 1) + "° " + (rt.valid ? "目标已发送（到位未确认）" : ("✗ " + rt.parsed_text));
     }
     if (r.parsed_text.length() == 0) r.parsed_text = "无参数";
     return r;
 }
 
+MotorResponse GimbalController::positionSafety(bool hasPan, bool hasTilt, float* panDegrees) {
+    MotorResponse r; r.valid = true;
+    if (!ready()) { r.valid = false; r.parsed_text = "云台未配置"; return r; }
+    if (hasPan) {
+        _motor->setAddr(_panAddr);
+        MotorResponse q = _motor->query(F32CMotor::RT_TOTAL_ANGLE);
+        if (!q.valid || q.type_code != F32CMotor::RT_TOTAL_ANGLE) {
+            emergencyStop();
+            r.valid = false; r.parsed_text = "水平轴实测角度读取失败，已停机"; return r;
+        }
+        if (panDegrees) *panDegrees = q.value / 10.0f;
+    }
+    if (hasTilt) {
+        _motor->setAddr(_tiltAddr);
+        MotorResponse q = _motor->query(F32CMotor::RT_TOTAL_ANGLE);
+        if (!q.valid || q.type_code != F32CMotor::RT_TOTAL_ANGLE || q.value > 900 || q.value < -900) {
+            emergencyStop();
+            r.valid = false; r.parsed_text = "垂直轴实测越过 ±90° 或角度读取失败，已停机"; return r;
+        }
+    }
+    return r;
+}
+
 // ---------------- 双轴回中（原点 0°） ----------------
-MotorResponse GimbalController::center() {
-    return move(0.0f, 0.0f, true, true);
+MotorResponse GimbalController::center(int16_t position_speed) {
+    // The ordinary position path already reads both axes and plans the nearest
+    // equivalent pan zero. Tilt keeps its bounded multi-turn coordinate.
+    return move(0.0f, 0.0f, true, true, position_speed);
 }
 
 // ---------------- 双轴当前位置记为多圈原点 ----------------
@@ -188,7 +260,7 @@ MotorResponse GimbalController::zero() {
         _panAngle = 0.0f;
         _tiltAngle = 0.0f;
         r.valid = true;
-        r.parsed_text = "两轴当前位置已设为 0°，建议再执行 save 命令永久写入";
+        r.parsed_text = "两轴设零命令已发送（执行未由反馈确认），建议再执行 save 命令永久写入";
     } else {
         r.valid = false;
         r.parsed_text = "设零点失败: pan=" + r1.parsed_text + " tilt=" + r2.parsed_text;
@@ -203,9 +275,9 @@ MotorResponse GimbalController::emergencyStop() {
         r.parsed_text = "云台未配置，失联停机无需动作";
         return r;
     }
-    // fail-safe 策略：双轴强制速度模式 + 0 RPM——保持力矩锁定当前位置，
-    // 避免 disable（失能）导致垂直轴因重力垂头。切模式失败重试 1 次。
-    // ⚠️ 该停机机制的正确性需真机 HIL 验证（见 docs/README.md 安全边界节）
+    // fail-safe 策略：双轴下发速度模式 + 0 RPM，避免 disable（失能）导致
+    // 垂直轴因重力垂头。写入没有即时电机 ACK；切模式失败重试 1 次，
+    // 保持力矩与停机时延仍需查询或真机 HIL 验证。
     bool ok = true;
     String detail = "";
     for (uint8_t i = 0; i < 2; i++) {
@@ -214,19 +286,28 @@ MotorResponse GimbalController::emergencyStop() {
         if (!rm.valid) rm = _axisSetMode(isPan, 0);   // 重试一次
         if (!rm.valid) {
             ok = false;
+            (isPan ? _panMode : _tiltMode) = -1;
             detail += String(isPan ? "pan" : "tilt") + " 切模式失败 ";
             continue;
         }
-        _axisEnable(isPan);
+        MotorResponse re = _axisEnable(isPan);
+        if (!re.valid) {
+            ok = false;
+            (isPan ? _panMode : _tiltMode) = -1;
+            detail += String(isPan ? "pan" : "tilt") + " 使能确认失败 ";
+            continue;
+        }
         MotorResponse rs = _axisSetSpeed(isPan, 0);
         if (!rs.valid) {
             ok = false;
+            (isPan ? _panMode : _tiltMode) = -1;
             detail += String(isPan ? "pan" : "tilt") + " 速度0下发失败 ";
+            continue;
         }
         (isPan ? _panMode : _tiltMode) = 0;   // 缓存与实际一致（速度模式）
     }
     r.valid = ok;
-    r.parsed_text = detail + "失联停机：双轴速度模式 0 RPM（保持力矩锁定）";
+    r.parsed_text = detail + "失联停机命令已发送：双轴速度模式 0 RPM（保持力矩未由反馈确认）";
     return r;
 }
 
