@@ -59,6 +59,8 @@ data class GimbalTelemetry(
     val temperatureC: Double = 25.0,
     val fault: String? = null,
     val lastAckSeq: UShort? = null,
+    /** Monotonic-ms when the angles were last measured; 0 means never measured. */
+    val measuredAtMs: Long = 0L,
 )
 
 enum class GimbalMode {

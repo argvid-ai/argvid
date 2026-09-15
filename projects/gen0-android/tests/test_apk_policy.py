@@ -16,14 +16,21 @@ class ApkPolicyTest(unittest.TestCase):
     def dump(self, *args):
         return subprocess.check_output([str(self.aapt), "dump", *args], text=True)
 
-    def test_app_has_separate_sandbox_and_no_network_or_extra_runtime_permissions(self):
+    def test_app_has_separate_sandbox_and_only_declared_discovery_permissions(self):
         output = self.dump("permissions", str(self.apk))
         self.assertIn("package: ai.argvid.gen0.camera\n", output)
         permissions = set(re.findall(r"uses-permission: name='([^']+)'", output))
+        # BLUETOOTH_SCAN (neverForLocation) and BLUETOOTH_CONNECT back the read-only
+        # real-gimbal discovery mode; legacy BLUETOOTH and ACCESS_FINE_LOCATION
+        # (both maxSdkVersion=30) cover API 29-30 scanning. No network permission.
         self.assertEqual({
             "android.permission.CAMERA",
             "android.permission.RECORD_AUDIO",
             "android.permission.WAKE_LOCK",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH",
+            "android.permission.ACCESS_FINE_LOCATION",
             "ai.argvid.gen0.camera.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
         }, permissions)
 

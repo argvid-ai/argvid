@@ -31,7 +31,7 @@ class DetectionSensitivityTest {
         val permissive = DetectionSensitivity.fromProgress(100)
 
         assertEquals(0.18f, strict.minimumFaceWidthRatio, 0.0001f)
-        assertEquals(0.10f, permissive.minimumFaceWidthRatio, 0.0001f)
+        assertEquals(0.04f, permissive.minimumFaceWidthRatio, 0.0001f)
         assertTrue(permissive.minimumFaceWidthRatio < strict.minimumFaceWidthRatio)
     }
 }

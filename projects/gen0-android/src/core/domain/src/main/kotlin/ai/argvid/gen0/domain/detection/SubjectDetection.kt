@@ -12,6 +12,9 @@ enum class SubjectLabel {
 data class SubjectObservation(
     val labels: Set<SubjectLabel>,
     val observedAt: Instant,
+    /** Normalized subject-box center in image coordinates when geometry is known. */
+    val centerX: Float? = null,
+    val centerY: Float? = null,
 ) {
     val hasSubject: Boolean
         get() = labels.isNotEmpty()
@@ -113,6 +116,8 @@ data class DetectionSensitivity private constructor(
         private const val MAXIMUM_PERSON_AREA_RATIO = 0.08f
         private const val MINIMUM_PERSON_AREA_RATIO = 0.01f
         private const val MAXIMUM_FACE_WIDTH_RATIO = 0.18f
-        private const val MINIMUM_FACE_WIDTH_RATIO = 0.10f
+
+        /** Widened from 0.10 after field testing: tracking needs distant faces. */
+        private const val MINIMUM_FACE_WIDTH_RATIO = 0.04f
     }
 }

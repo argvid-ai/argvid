@@ -2,6 +2,7 @@ package ai.argvid.gen0.session
 
 enum class AppPermission {
     Camera,
+    Bluetooth,
 }
 
 enum class PermissionStatus {

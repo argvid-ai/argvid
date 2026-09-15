@@ -4,7 +4,7 @@ Review status: required. This inventory is engineering evidence, not legal, publ
 
 ## Pinned direct components
 
-Exact modules are declared in `src/gradle/libs.versions.toml` and each module build file. Resolved versions, including transitive and build/test artifacts, are enumerated in [dependencies.tsv](docs/dependencies.tsv). Its 660 component rows were derived from generated verification metadata, cached public POMs, and reviewed Maven Central cold-resolution supplements, not guessed from library family names. Multiple versions can be resolved across module/build/test configurations; this is not a list of 660 libraries bundled in the app.
+Exact modules are declared in `src/gradle/libs.versions.toml` and each module build file. Resolved versions, including transitive and build/test artifacts, are enumerated in [dependencies.tsv](docs/dependencies.tsv). Its 674 component rows were derived from generated verification metadata, cached public POMs, and reviewed Maven Central cold-resolution supplements, not guessed from library family names. Multiple versions can be resolved across module/build/test configurations; this is not a list of 660 libraries bundled in the app.
 
 | Component / selected version | Public source and license declaration | Use / notices |
 |---|---|---|
@@ -23,6 +23,12 @@ Exact modules are declared in `src/gradle/libs.versions.toml` and each module bu
 | JUnit 4.13.2 | [JUnit POM](https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.pom), Eclipse Public License 1.0 | Tests only. This is EPL-1.0, not Apache-2.0; preserve notices and applicable source availability obligations if distributing test binaries. |
 | AndroidX Test core/runner 1.7.0; ext:junit 1.3.0 | [AndroidX Test source](https://github.com/android/android-test), Apache-2.0 declarations | Instrumentation only; compiled test APKs are not included. |
 | JDK17 / Android SDK36, Build-Tools36.0.0 / Swift-AppKit on macOS | [OpenJDK](https://openjdk.org/projects/jdk/17/), [Android SDK terms](https://developer.android.com/studio/terms), [Swift](https://www.swift.org/) | User-installed tools, not bundled. JDK distribution and Apple platform SDK terms depend on the chosen installation. macOS/Swift is optional for fixture regeneration only. |
+
+| [MediaPipe tasks-vision 1.0.0](https://github.com/google-ai-edge/mediapipe) | Apache-2.0 ([POM](https://dl.google.com/android/maven2/com/google/mediapipe/tasks-vision/1.0.0/tasks-vision-1.0.0.pom)) | On-device face detection runtime; bundles the reviewed BlazeFace short-range model (see below) |
+
+### Bundled model asset
+
+`src/adapter/capture/src/main/assets/blaze_face_short_range.tflite` is the MediaPipe BlazeFace short-range face-detection model (229,746 bytes, SHA-256 `b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f`), byte-identical to Google's official distribution at `storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite`, distributed under Apache-2.0 (MediaPipe model page). It runs via the Apache-2.0 `com.google.mediapipe:tasks-vision:1.0.0` runtime. An earlier iteration bundled the EfficientDet-Lite0 int8 person model (equally reviewed, byte-identical to the official distribution); it was removed after field testing per the owner's direction — face detection is the only bundled subject signal.
 
 ## Evidence and redistribution boundary
 

@@ -31,6 +31,8 @@ import ai.argvid.gen0.domain.session.SessionState
 import ai.argvid.gen0.domain.time.MonotonicClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -56,6 +58,69 @@ class SessionViewModelTest {
         runCurrent()
         assertTrue(model.uiState.value.statusText.contains("麦克风权限未授予"))
         assertFalse(model.uiState.value.rescueEnabled)
+    }
+
+    @Test
+    fun selectingRealGimbalRequestsBluetoothPermissionWithoutStartingMotion() = runTest {
+        val model = viewModel()
+
+        model.onAction(SessionAction.SelectGimbalSource(GimbalSource.RealBle))
+        runCurrent()
+
+        assertEquals(GimbalSource.RealBle, model.uiState.value.gimbal.source)
+        assertEquals(AppPermission.Bluetooth, model.uiState.value.permissionRequest)
+        assertTrue(model.uiState.value.gimbalNotice.orEmpty().contains("不发送电机命令"))
+        assertEquals(GimbalMotionState.Idle, model.uiState.value.gimbal.motion)
+
+        model.onPermissionResult(AppPermission.Bluetooth, granted = true)
+        runCurrent()
+
+        assertEquals(GimbalSource.RealBle, model.uiState.value.gimbal.source)
+        assertEquals(null, model.uiState.value.permissionRequest)
+        assertTrue(model.uiState.value.gimbalNotice.orEmpty().contains("不发送电机命令"))
+    }
+
+    @Test
+    fun deniedBluetoothPermissionKeepsSimulatorAvailableAndDoesNotMoveGimbal() = runTest {
+        val model = viewModel()
+
+        model.onAction(SessionAction.SelectGimbalSource(GimbalSource.RealBle))
+        runCurrent()
+        model.onPermissionResult(AppPermission.Bluetooth, granted = false)
+        runCurrent()
+
+        assertEquals(GimbalSource.RealBle, model.uiState.value.gimbal.source)
+        assertEquals(GimbalMotionState.Idle, model.uiState.value.gimbal.motion)
+        assertTrue(model.uiState.value.statusText.contains("蓝牙权限未授予"))
+
+        model.onAction(SessionAction.ConnectGimbal)
+        runCurrent()
+        assertEquals(GimbalSource.Simulator, model.uiState.value.gimbal.source)
+        assertEquals("仅提供语义模拟器；不连接物理云台", model.uiState.value.gimbalNotice)
+    }
+
+    @Test
+    fun realGimbalScanIsReadOnlyAndReportsCandidateNames() = runTest {
+        val model = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            discovery = GimbalDiscovery { listOf("F32C-Gimbal") },
+        )
+
+        model.onAction(SessionAction.SelectGimbalSource(GimbalSource.RealBle))
+        runCurrent()
+        model.onPermissionResult(AppPermission.Bluetooth, granted = true)
+        model.onAction(SessionAction.ScanRealGimbal)
+        runCurrent()
+
+        assertEquals(listOf("F32C-Gimbal"), model.uiState.value.gimbalDiscovery.candidates)
+        assertEquals(false, model.uiState.value.gimbalDiscovery.scanning)
+        assertEquals(GimbalMotionState.Idle, model.uiState.value.gimbal.motion)
+        assertTrue(model.uiState.value.gimbalNotice.orEmpty().contains("未连接"))
     }
 
     @Test
@@ -432,6 +497,167 @@ class SessionViewModelTest {
         assertEquals("已保存到相册", viewModel.uiState.value.statusText)
     }
 
+    @Test
+    fun trackingToggleStartsDetectionAndNudgesBoundedCorrections() = runTest {
+        val source = FakeDetectionSource()
+        val nudges = mutableListOf<Pair<Double, Double>>()
+        var stops = 0
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+            trackingDriver = object : GimbalTrackingDriver {
+                override suspend fun nudge(panDeltaDeg: Double, tiltDeltaDeg: Double): Boolean {
+                    nudges += panDeltaDeg to tiltDeltaDeg
+                    return true
+                }
+
+                override suspend fun stop(): Boolean {
+                    stops += 1
+                    return true
+                }
+            },
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        assertEquals(1, source.started)
+        assertTrue(viewModel.uiState.value.subjectDetection.trackingEnabled)
+        // Fixed face confidence 0.5; default face sensitivity (progress 50) maps to ~0.14 width ratio.
+        assertEquals(0.5f, source.lastThresholds!!.first, 1e-6f)
+        assertEquals(0.11f, source.lastThresholds!!.second, 1e-4f)
+
+        val at = Instant.parse("2026-09-14T10:00:00Z")
+        source.bus.emit(SubjectObservation(setOf(SubjectLabel.FACE), at, centerX = 1.0f, centerY = 0.5f))
+        runCurrent()
+        // Right-edge error (30°) smooths to 15° and clamps to the 8° tracker bound;
+        // the driver issues one bounded absolute move from fresh telemetry.
+        assertEquals(listOf(8.0 to 0.0), nudges)
+        assertTrue(viewModel.uiState.value.subjectDetection.detectorAvailable)
+
+        // Absent sightings carry no geometry: no further commands are issued.
+        source.bus.emit(SubjectObservation(emptySet(), at.plusMillis(50)))
+        runCurrent()
+        source.bus.emit(SubjectObservation(emptySet(), at.plusMillis(600)))
+        runCurrent()
+        assertEquals(listOf(8.0 to 0.0), nudges)
+
+        viewModel.onAction(SessionAction.SetTrackingEnabled(false))
+        runCurrent()
+        assertEquals(2, stops)
+    }
+
+    @Test
+    fun disablingTrackingStopsDetectionAndClearsState() = runTest {
+        val source = FakeDetectionSource()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        viewModel.onAction(SessionAction.SetTrackingEnabled(false))
+        runCurrent()
+        assertEquals(1, source.stopped)
+        assertFalse(viewModel.uiState.value.subjectDetection.trackingEnabled)
+        assertFalse(viewModel.uiState.value.subjectDetection.detectorAvailable)
+    }
+
+    @Test
+    fun selectingTheSimulatorSourceDisablesTracking() = runTest {
+        val source = FakeDetectionSource()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        viewModel.onAction(SessionAction.SelectGimbalSource(GimbalSource.Simulator))
+        runCurrent()
+        assertEquals(1, source.stopped)
+        assertFalse(viewModel.uiState.value.subjectDetection.trackingEnabled)
+    }
+
+    @Test
+    fun sensitivityChangesPropagateToTheRunningDetectionSource() = runTest {
+        val source = FakeDetectionSource()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        viewModel.onFaceDetectionSensitivityChanged(0)
+        runCurrent()
+        assertEquals(0.5f, source.lastThresholds!!.first, 1e-6f)
+        assertEquals(0.18f, source.lastThresholds!!.second, 1e-4f)
+    }
+
+    @Test
+    fun measuredMotionDropsConflatedCorrections() = runTest {
+        val source = FakeDetectionSource()
+        val nudges = mutableListOf<Pair<Double, Double>>()
+        val gimbal = FakeSessionGimbal()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = gimbal,
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+            trackingDriver = object : GimbalTrackingDriver {
+                override suspend fun nudge(panDeltaDeg: Double, tiltDeltaDeg: Double): Boolean {
+                    nudges += panDeltaDeg to tiltDeltaDeg
+                    return true
+                }
+
+                override suspend fun stop(): Boolean = true
+            },
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        val at = Instant.parse("2026-09-15T10:00:00Z")
+
+        // Static telemetry: the first bounded correction issues.
+        source.bus.emit(SubjectObservation(setOf(SubjectLabel.FACE), at, centerX = 1.0f, centerY = 0.5f))
+        runCurrent()
+        assertEquals(1, nudges.size)
+
+        // Measured motion (2° in 200 ms = 10°/s): the conflated correction from the
+        // next sighting is dropped until the axes settle.
+        gimbal.telemetry.value = gimbal.telemetry.value.copy(panDeg = 2.0, measuredAtMs = 200)
+        runCurrent()
+        source.bus.emit(SubjectObservation(setOf(SubjectLabel.FACE), at.plusMillis(400), centerX = 1.0f, centerY = 0.5f))
+        runCurrent()
+        assertEquals("correction during motion must be dropped", 1, nudges.size)
+
+        // Motion settles (same angle in the next sample): corrections resume.
+        gimbal.telemetry.value = gimbal.telemetry.value.copy(measuredAtMs = 400)
+        runCurrent()
+        source.bus.emit(SubjectObservation(setOf(SubjectLabel.FACE), at.plusMillis(800), centerX = 1.0f, centerY = 0.5f))
+        runCurrent()
+        assertEquals("settled correction must issue", 2, nudges.size)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.viewModel(
         capture: FakeSessionCapture = FakeSessionCapture(),
         moments: FakeSessionMoments = FakeSessionMoments(),
@@ -503,6 +729,46 @@ private class FakeSessionMoments(
     override suspend fun retryCleanup(): MomentResult = MomentResult(state.value)
     override fun onStop() {
         stopCalls += 1
+    }
+}
+
+private class IdleCaptureActions : SessionCaptureActions {
+    override val state = MutableStateFlow(SessionState.Idle)
+    override val rescueAvailable = MutableStateFlow(false)
+    override val acceptFrames = MutableStateFlow(false)
+    override suspend fun beginSession() = Unit
+    override suspend fun onMotion(next: GimbalMotionState) = Unit
+    override suspend fun stop(reason: StopReason) = CaptureStopResult(reason, SessionState.Idle, 0)
+}
+
+private class IdleMomentActions : SessionMomentActions {
+    override val state = MutableStateFlow<MomentState>(MomentState.SaveFailed)
+    override suspend fun beginSession() = Unit
+    override suspend fun captureRescue(nowUs: Long) = MomentResult(MomentState.SaveFailed)
+    override suspend fun retrySaving() = MomentResult(MomentState.SaveFailed)
+    override suspend fun abandon() = MomentResult(MomentState.SaveFailed)
+    override suspend fun retryCleanup() = MomentResult(MomentState.SaveFailed)
+    override fun onStop() = Unit
+}
+
+private class FakeDetectionSource : FaceDetectionSource {
+    val bus = MutableSharedFlow<SubjectObservation>(extraBufferCapacity = 16)
+    override val observations: Flow<SubjectObservation> = bus
+    var started = 0
+    var stopped = 0
+    var lastThresholds: Pair<Float, Float>? = null
+
+    override fun start(minConfidence: Float, minWidthRatio: Float) {
+        started += 1
+        lastThresholds = minConfidence to minWidthRatio
+    }
+
+    override fun updateThresholds(minConfidence: Float, minWidthRatio: Float) {
+        lastThresholds = minConfidence to minWidthRatio
+    }
+
+    override fun stop() {
+        stopped += 1
     }
 }
 

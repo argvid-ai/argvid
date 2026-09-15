@@ -11,9 +11,25 @@ data class GimbalUiState(
     val connection: GimbalConnectionState = GimbalConnectionState.Disconnected,
     val motion: GimbalMotionState = GimbalMotionState.Idle,
     val temperatureC: Double = 0.0,
+    val source: GimbalSource = GimbalSource.Simulator,
 )
 
+data class GimbalDiscoveryUiState(
+    val scanning: Boolean = false,
+    val candidates: List<String> = emptyList(),
+    val error: String? = null,
+)
+
+enum class GimbalSource {
+    Simulator,
+    RealBle,
+}
+
 data class SubjectDetectionUiState(
+    val trackingEnabled: Boolean = false,
+    val trackingGain: Double = DEFAULT_TRACKING_GAIN,
+    val invertPan: Boolean = false,
+    val invertTilt: Boolean = false,
     val detectorAvailable: Boolean = false,
     val labels: Set<SubjectLabel> = emptySet(),
     val personSensitivity: DetectionSensitivity = DetectionSensitivity.DEFAULT,
@@ -27,6 +43,7 @@ data class SessionUiState(
     val effectiveDurationUs: Long = 0,
     val proxyProfile: String = "960×540 · 8 fps · JPEG 70%",
     val gimbal: GimbalUiState = GimbalUiState(),
+    val gimbalDiscovery: GimbalDiscoveryUiState = GimbalDiscoveryUiState(),
     val warmupRemainingUs: Long = 15_000_000,
     val rescueEnabled: Boolean = false,
     val stopEnabled: Boolean = false,
@@ -44,6 +61,11 @@ data class SessionUiState(
 sealed interface SessionAction {
     data object StartPreflight : SessionAction
     data object ConnectGimbal : SessionAction
+    data class SelectGimbalSource(val source: GimbalSource) : SessionAction
+    data object ScanRealGimbal : SessionAction
+    data class SetTrackingEnabled(val enabled: Boolean) : SessionAction
+    data class SetTrackingAxisInversion(val invertPan: Boolean, val invertTilt: Boolean) : SessionAction
+    data class SetTrackingGain(val gain: Double) : SessionAction
     data object Rescue : SessionAction
     data object Stop : SessionAction
     data object RetrySave : SessionAction

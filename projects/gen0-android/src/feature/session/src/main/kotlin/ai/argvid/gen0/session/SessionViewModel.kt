@@ -5,7 +5,9 @@ import ai.argvid.gen0.domain.capture.CaptureStopResult
 import ai.argvid.gen0.domain.capture.StopReason
 import ai.argvid.gen0.domain.detection.AutomaticRecordingPolicy
 import ai.argvid.gen0.domain.detection.DetectionSensitivity
+import ai.argvid.gen0.domain.detection.GimbalSubjectTracker
 import ai.argvid.gen0.domain.detection.SubjectObservation
+import ai.argvid.gen0.domain.detection.TrackingOptics
 import ai.argvid.gen0.domain.gimbal.GimbalConnectionState
 import ai.argvid.gen0.domain.gimbal.GimbalController
 import ai.argvid.gen0.domain.gimbal.GimbalMotionState
@@ -19,8 +21,10 @@ import ai.argvid.gen0.domain.session.SessionState
 import ai.argvid.gen0.domain.time.MonotonicClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,6 +79,29 @@ interface SessionGimbalStatus {
     val telemetry: StateFlow<GimbalTelemetry>
 }
 
+fun interface GimbalDiscovery {
+    suspend fun scan(): List<String>
+}
+
+/** External on-device face detection source with its own lifecycle. */
+interface FaceDetectionSource {
+    val observations: Flow<SubjectObservation>
+    fun start(minConfidence: Float, minWidthRatio: Float)
+    fun updateThresholds(minConfidence: Float, minWidthRatio: Float)
+    fun stop()
+}
+
+/**
+ * Applies bounded, measured-angle tracking corrections through the gimbal
+ * controller. Tracking must use the controller boundary so capability ranges
+ * and telemetry freshness are checked before every physical move.
+ */
+interface GimbalTrackingDriver {
+    suspend fun nudge(panDeltaDeg: Double, tiltDeltaDeg: Double): Boolean
+
+    suspend fun stop(): Boolean
+}
+
 class DomainSessionGimbal(controller: GimbalController) : SessionGimbalStatus {
     override val connection = controller.link.connection
     override val motion = controller.link.motion
@@ -88,6 +115,16 @@ class SessionViewModel(
     private val permissionCoordinator: PermissionCoordinator,
     private val clock: MonotonicClock,
     scope: CoroutineScope? = null,
+    private val discovery: GimbalDiscovery? = null,
+    private val detection: FaceDetectionSource? = null,
+    private val trackingDriver: GimbalTrackingDriver? = null,
+    private val trackingGimbal: SessionGimbalStatus? = null,
+    private val subjectTracker: GimbalSubjectTracker = GimbalSubjectTracker(
+        // Phone-camera FOV defaults; axis signs assume an upright camera mount.
+        // Calibrate both on the approved device before relying on tracking.
+        TrackingOptics(horizontalFovDeg = 60.0, verticalFovDeg = 40.0),
+        maxCorrectionDeg = 8.0,
+    ),
 ) : ViewModel() {
     private val actionScope = scope ?: viewModelScope
     private var effectiveDurationUs = if (capture.rescueAvailable.value) RESCUE_DURATION_US else 0L
@@ -97,11 +134,14 @@ class SessionViewModel(
     private var startJob: Job? = null
     private var cleanupFailed = false
     private var gimbalNotice: String? = null
+    private var gimbalSource = GimbalSource.Simulator
+    private var gimbalDiscovery = GimbalDiscoveryUiState()
     private var rescueInProgress = false
     private var rescueFailureMessage: String? = null
     private var captureFailureMessage: String? = null
     private val automaticRecordingPolicy = AutomaticRecordingPolicy()
     private var subjectDetection = SubjectDetectionUiState()
+    private var trackingJob: Job? = null
     private val mutableUiState = MutableStateFlow(buildState())
     val uiState: StateFlow<SessionUiState> = mutableUiState.asStateFlow()
 
@@ -121,7 +161,22 @@ class SessionViewModel(
         when (action) {
             SessionAction.StartPreflight -> requestStart()
             SessionAction.ConnectGimbal -> {
+                gimbalSource = GimbalSource.Simulator
                 gimbalNotice = "仅提供语义模拟器；不连接物理云台"
+                refresh()
+            }
+            is SessionAction.SelectGimbalSource -> selectGimbalSource(action.source)
+            SessionAction.ScanRealGimbal -> scanRealGimbal()
+            is SessionAction.SetTrackingEnabled -> setTrackingEnabled(action.enabled)
+            is SessionAction.SetTrackingGain -> {
+                subjectDetection = subjectDetection.copy(trackingGain = action.gain)
+                refresh()
+            }
+            is SessionAction.SetTrackingAxisInversion -> {
+                subjectDetection = subjectDetection.copy(
+                    invertPan = action.invertPan,
+                    invertTilt = action.invertTilt,
+                )
                 refresh()
             }
             SessionAction.Rescue -> requestRescue()
@@ -155,6 +210,57 @@ class SessionViewModel(
         refresh()
     }
 
+    private fun selectGimbalSource(source: GimbalSource) {
+        gimbalSource = source
+        when (source) {
+            GimbalSource.Simulator -> {
+                if (subjectDetection.trackingEnabled) setTrackingEnabled(false)
+                gimbalNotice = "仅提供语义模拟器；不连接物理云台"
+                refresh()
+            }
+            GimbalSource.RealBle -> {
+                gimbalNotice = "真实云台模式已选择；当前仅申请蓝牙权限并准备扫描，不发送电机命令"
+                if (permissionCoordinator.status(AppPermission.Bluetooth) == PermissionStatus.Granted) {
+                    refresh()
+                } else {
+                    requestPermission(AppPermission.Bluetooth)
+                }
+            }
+        }
+    }
+
+    private fun scanRealGimbal() {
+        if (gimbalSource != GimbalSource.RealBle) {
+            selectGimbalSource(GimbalSource.RealBle)
+            return
+        }
+        if (permissionCoordinator.status(AppPermission.Bluetooth) != PermissionStatus.Granted) {
+            selectGimbalSource(GimbalSource.RealBle)
+            return
+        }
+        val scanner = discovery
+        if (scanner == null || gimbalDiscovery.scanning) return
+        gimbalDiscovery = GimbalDiscoveryUiState(scanning = true)
+        gimbalNotice = "正在扫描 F32C-Gimbal 广播；不会发送电机命令"
+        refresh()
+        actionScope.launch {
+            try {
+                val candidates = scanner.scan().distinct()
+                gimbalDiscovery = GimbalDiscoveryUiState(candidates = candidates)
+                gimbalNotice = if (candidates.isEmpty()) {
+                    "未发现 F32C-Gimbal；未发送电机命令"
+                } else {
+                    "发现 ${candidates.size} 个 F32C-Gimbal；仅完成广播扫描，未连接或发送命令"
+                }
+            } catch (error: Exception) {
+                gimbalDiscovery = GimbalDiscoveryUiState(error = error.message ?: "扫描失败")
+                gimbalNotice = "真实云台扫描失败；未发送电机命令"
+            } finally {
+                refresh()
+            }
+        }
+    }
+
     fun onWarmupProgress(durationUs: Long) {
         effectiveDurationUs = durationUs.coerceIn(0, RESCUE_DURATION_US)
         refresh()
@@ -186,6 +292,131 @@ class SessionViewModel(
         refresh()
     }
 
+    /** Last telemetry snapshot used to derive measured angular speed. */
+    private var settleSamplePan = Double.NaN
+    private var settleSampleTilt = Double.NaN
+    private var settleSampleAtMs = 0L
+
+    /** True when both axes move slower than the settle threshold (deg/s). */
+    private fun axesSettled(): Boolean {
+        val sample = (trackingGimbal ?: gimbal).telemetry.value
+        val atMs = sample.measuredAtMs
+        val dtMs = atMs - settleSampleAtMs
+        val panSpeed = if (dtMs > 0 && !settleSamplePan.isNaN()) {
+            kotlin.math.abs(sample.panDeg - settleSamplePan) * 1000.0 / dtMs
+        } else {
+            0.0
+        }
+        val tiltSpeed = if (dtMs > 0 && !settleSampleTilt.isNaN()) {
+            kotlin.math.abs(sample.tiltDeg - settleSampleTilt) * 1000.0 / dtMs
+        } else {
+            0.0
+        }
+        settleSamplePan = sample.panDeg
+        settleSampleTilt = sample.tiltDeg
+        settleSampleAtMs = atMs
+        return panSpeed < TRACKING_SETTLE_SPEED_DEG_PER_S && tiltSpeed < TRACKING_SETTLE_SPEED_DEG_PER_S
+    }
+
+    /**
+     * Subject tracking is the explicit opt-in closed loop. Observations only
+     * compute corrections into a conflated channel; a dedicated executor always
+     * takes the newest correction and issues one bounded nudge anchored on the
+     * latest measured angle. Recording stays untouched by this path.
+     */
+    private fun setTrackingEnabled(enabled: Boolean) {
+        if (enabled == subjectDetection.trackingEnabled) return
+        val source = detection
+        if (enabled && source == null) {
+            gimbalNotice = "当前构建没有检测源；主体跟随不可用"
+            refresh()
+            return
+        }
+        subjectDetection = if (enabled) {
+            subjectDetection.copy(trackingEnabled = true)
+        } else {
+            subjectDetection.copy(
+                trackingEnabled = false,
+                detectorAvailable = false,
+                labels = emptySet(),
+                lastDecision = null,
+            )
+        }
+        if (enabled) {
+            if (gimbalSource != GimbalSource.RealBle) selectGimbalSource(GimbalSource.RealBle)
+            actionScope.launch { trackingDriver?.stop() }
+            val sensitivity = subjectDetection.faceSensitivity
+            source!!.start(FACE_MIN_CONFIDENCE, sensitivity.minimumFaceWidthRatio)
+            val corrections = Channel<Pair<Double, Double>>(Channel.CONFLATED)
+            trackingJob = actionScope.launch {
+                launch {
+                    source.observations.collect { observation ->
+                        onSubjectObservation(observation)
+                        // Hard tilt watchdog: any measured tilt beyond the safe
+                        // envelope immediately kills tracking regardless of mode.
+                        val measuredTilt = (trackingGimbal ?: gimbal).telemetry.value.tiltDeg
+                        if (kotlin.math.abs(measuredTilt) > TILT_AUTOSTOP_DEG) {
+                            gimbalNotice = "实测俯仰 ${"%.1f".format(measuredTilt)}° 超出安全范围，主体跟随已自动关闭"
+                            setTrackingEnabled(false)
+                            return@collect
+                        }
+                        val correction = subjectTracker.update(observation, observation.observedAt)
+                        // No correction means hold the last bounded position target;
+                        // there is no continuous velocity to coast. Disabling tracking
+                        // sends an explicit stop through the controller boundary.
+                        val panSign = if (subjectDetection.invertPan) -1.0 else 1.0
+                        val tiltSign = if (subjectDetection.invertTilt) -1.0 else 1.0
+                        val gain = subjectDetection.trackingGain
+                        if (correction != null) {
+                            corrections.trySend(
+                                correction.panDeg * panSign * gain to correction.tiltDeg * tiltSign * gain,
+                            )
+                        }
+                    }
+                }
+                launch {
+                    var consecutiveFailures = 0
+                    for (correction in corrections) {
+                        val driver = trackingDriver ?: break
+                        // Settle gating against the REAL gimbal's telemetry: vision
+                        // latency means a correction issued while the axes still move
+                        // piles a fresh error onto a base that has not caught up.
+                        if (!axesSettled()) {
+                            android.util.Log.i(TRACK_TAG, "correction dropped: axes unsettled")
+                            continue
+                        }
+                        val accepted = driver.nudge(correction.first, correction.second)
+                        android.util.Log.i(
+                            TRACK_TAG,
+                            "nudge pan=${"%.2f".format(correction.first)} tilt=${"%.2f".format(correction.second)} accepted=$accepted",
+                        )
+                        if (accepted) {
+                            consecutiveFailures = 0
+                        } else {
+                            // A single rejection (e.g. a transient command timeout on a
+                            // congested link) must not turn into a stop command that
+                            // fights the next correction; only sustained failure stops.
+                            consecutiveFailures += 1
+                            if (consecutiveFailures >= 3) {
+                                gimbalNotice = "跟踪修正连续被拒，主体跟随已停止"
+                                android.util.Log.e(TRACK_TAG, "tracking stopped after $consecutiveFailures consecutive rejections")
+                                setTrackingEnabled(false)
+                                return@launch
+                            }
+                        }
+                    }
+                }
+            }
+            gimbalNotice = "主体跟随已开启：检测驱动云台小幅修正；录像不受影响"
+        } else {
+            trackingJob?.cancel()
+            trackingJob = null
+            source?.stop()
+            actionScope.launch { trackingDriver?.stop() }
+        }
+        refresh()
+    }
+
     fun onPersonDetectionSensitivityChanged(progress: Int) {
         subjectDetection = subjectDetection.copy(
             personSensitivity = DetectionSensitivity.fromProgress(progress),
@@ -197,6 +428,10 @@ class SessionViewModel(
         subjectDetection = subjectDetection.copy(
             faceSensitivity = DetectionSensitivity.fromProgress(progress),
         )
+        if (subjectDetection.trackingEnabled) {
+            val sensitivity = subjectDetection.faceSensitivity
+            detection?.updateThresholds(FACE_MIN_CONFIDENCE, sensitivity.minimumFaceWidthRatio)
+        }
         refresh()
     }
 
@@ -317,10 +552,12 @@ class SessionViewModel(
             previewVisible = active && session != SessionState.Paused(PauseReason.UserStop),
             effectiveDurationUs = effectiveDurationUs,
             gimbal = GimbalUiState(
+                source = gimbalSource,
                 connection = gimbal.connection.value,
                 motion = gimbal.motion.value,
                 temperatureC = gimbal.telemetry.value.temperatureC,
             ),
+            gimbalDiscovery = gimbalDiscovery,
             warmupRemainingUs = (RESCUE_DURATION_US - effectiveDurationUs).coerceAtLeast(0),
             rescueEnabled = rescueAvailable && session == SessionState.Running && !rescueInProgress && !cleanupFailed &&
                 moment !is MomentState.Encoding && moment !is MomentState.Saving &&
@@ -347,13 +584,26 @@ class SessionViewModel(
 
     private fun AppPermission.displayName(): String = when (this) {
         AppPermission.Camera -> "相机和麦克风"
+        AppPermission.Bluetooth -> "蓝牙"
     }
 
     private fun AppPermission.deniedMessage(): String = when (this) {
         AppPermission.Camera -> "相机或麦克风权限未授予，采集不可用；请在系统设置中允许两项权限"
+        AppPermission.Bluetooth -> "蓝牙权限未授予，真实云台扫描不可用；模拟器仍可使用"
     }
 
     private companion object {
         const val RESCUE_DURATION_US = 15_000_000L
+        const val FACE_MIN_CONFIDENCE = 0.5f
     }
 }
+
+private const val TRACK_TAG = "SESSION_TRACK"
+
+/** Measured angular speed (deg/s) below which a new tracking correction may issue. */
+private const val TRACKING_SETTLE_SPEED_DEG_PER_S = 3.0
+
+/** Measured tilt beyond this envelope auto-disables subject tracking. */
+private const val TILT_AUTOSTOP_DEG = 95.0
+
+internal const val DEFAULT_TRACKING_GAIN = 1.0

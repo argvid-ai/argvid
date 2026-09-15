@@ -53,7 +53,7 @@ class SimulatedGimbalLink(
         motionGeneration++
         mutableConnection.value = GimbalConnectionState.Connecting
         mutableMotion.value = GimbalMotionState.Idle
-        mutableTelemetry.value = GimbalTelemetry()
+        mutableTelemetry.value = GimbalTelemetry(measuredAtMs = clock.nowUs() / 1_000)
         mutableConnection.value = GimbalConnectionState.Ready
         refreshWatchdog()
         return capability
@@ -76,6 +76,7 @@ class SimulatedGimbalLink(
             panDeg = setpoint.panDeg,
             tiltDeg = setpoint.tiltDeg,
             lastAckSeq = setpoint.seq,
+            measuredAtMs = clock.nowUs() / 1_000,
         )
         scheduleMotionCycle()
         return CommandReceipt(setpoint.seq, clock.nowUs())
@@ -99,6 +100,24 @@ class SimulatedGimbalLink(
             GimbalMode.Track,
             -> reject(GimbalCommandError.UnsupportedMode)
         }
+        return CommandReceipt(seq, clock.nowUs())
+    }
+
+    override suspend fun setSpeed(rpm: Int): CommandReceipt {
+        requireReady()
+        if (rpm < 1 || rpm > MAX_SPEED_RPM) reject(GimbalCommandError.SpeedOutOfRange)
+        val seq = nextControlSeq()
+        mutableTelemetry.value = mutableTelemetry.value.copy(lastAckSeq = seq)
+        return CommandReceipt(seq, clock.nowUs())
+    }
+
+    override suspend fun setVelocity(panRpm: Double, tiltRpm: Double): CommandReceipt {
+        requireReady()
+        if (kotlin.math.abs(panRpm) > MAX_SPEED_RPM || kotlin.math.abs(tiltRpm) > MAX_SPEED_RPM) {
+            reject(GimbalCommandError.SpeedOutOfRange)
+        }
+        val seq = nextControlSeq()
+        setMotion(if (panRpm == 0.0 && tiltRpm == 0.0) GimbalMotionState.Idle else GimbalMotionState.Moving)
         return CommandReceipt(seq, clock.nowUs())
     }
 
@@ -164,5 +183,9 @@ class SimulatedGimbalLink(
     private fun nextControlSeq(): UShort {
         controlSeq = (controlSeq.toInt() + 1).toUShort()
         return controlSeq
+    }
+
+    private companion object {
+        const val MAX_SPEED_RPM = 300
     }
 }
