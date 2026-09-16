@@ -120,10 +120,20 @@ void CmdHandler::processQueue() {
             if (sPan)  _gimbal->jog("pan", 0, 0);
             if (sTilt) _gimbal->jog("tilt", 0, 0);
             flushLogs();
-            // Stop consumed: drop the remaining queued motion commands so old
-            // targets do not execute after the stop.
-            BleCmdMsg drop;
-            while (_ble->popCommand(drop)) {}
+            // F2-new: drop only queued MOTION commands so old targets do not
+            // execute after the stop. Parameter commands (PID, speed config,
+            // scan, query) queued after the stop must survive — blanket-draining
+            // them would silently eat new configuration.
+            BleCmdMsg peek;
+            while (_ble->popCommand(peek)) {
+                if (peek.isWifi) { _ble->queueCommand(peek); continue; }
+                String body(peek.json);
+                bool isMotion = body.indexOf("move") >= 0 || body.indexOf("center") >= 0 ||
+                                body.indexOf("jog") >= 0 || body.indexOf("set_angle") >= 0 ||
+                                body.indexOf("set_multi_angle") >= 0;
+                if (!isMotion) { _ble->queueCommand(peek); }
+                // Motion commands are silently dropped.
+            }
             return;
         }
         if (!_ble->isConnected()) {
@@ -225,6 +235,24 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         if (speed < -1 || speed > 300) { _notifyResult(false, "位置速度必须在 0~300 RPM 范围"); return; }
         MotorResponse safety = _gimbal->positionSafety(hasPan, hasTilt);
         if (!safety.valid) { _notifyResult(false, safety.parsed_text); return; }
+        // F2: positionSafety blocks on a UART query. A stop or disconnect that
+        // arrived during the query must be re-checked here, before any motion-
+        // driving writes. Without this, the already-popped command would issue
+        // mode/enable/speed/target after the stop was consumed at the queue level.
+        {
+            bool rPan, rTilt;
+            if (_ble->takeDisconnectEvent()) {
+                _handleDisconnect();
+                _notifyResult(false, "运动命令在位置安全查询后被断连抢占，未执行");
+                return;
+            }
+            if (_ble->takeStopRequest(rPan, rTilt)) {
+                if (rPan)  _gimbal->jog("pan", 0, 0);
+                if (rTilt) _gimbal->jog("tilt", 0, 0);
+                _notifyResult(false, "运动命令在位置安全查询后被停止抢占，已转停止");
+                return;
+            }
+        }
         if ((hasPan && !_applyCachedRuntimeParams(_gimbal->panAddr())) ||
             (hasTilt && !_applyCachedRuntimeParams(_gimbal->tiltAddr()))) {
             _notifyResult(false, "恢复位置控制参数失败，已拒绝运动"); return;
@@ -239,6 +267,21 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         if (speed < -1 || speed > 300) { _notifyResult(false, "位置速度必须在 0~300 RPM 范围"); return; }
         MotorResponse safety = _gimbal->positionSafety(true, true);
         if (!safety.valid) { _notifyResult(false, safety.parsed_text); return; }
+        // F2: re-check safety after the blocking center query (same as move).
+        {
+            bool rPan, rTilt;
+            if (_ble->takeDisconnectEvent()) {
+                _handleDisconnect();
+                _notifyResult(false, "回中命令在安全查询后被断连抢占，未执行");
+                return;
+            }
+            if (_ble->takeStopRequest(rPan, rTilt)) {
+                if (rPan)  _gimbal->jog("pan", 0, 0);
+                if (rTilt) _gimbal->jog("tilt", 0, 0);
+                _notifyResult(false, "回中命令在安全查询后被停止抢占，已转停止");
+                return;
+            }
+        }
         if (!_applyCachedRuntimeParams(_gimbal->panAddr()) || !_applyCachedRuntimeParams(_gimbal->tiltAddr())) {
             _notifyResult(false, "恢复位置控制参数失败，已拒绝回中"); return;
         }

@@ -282,32 +282,35 @@ MotorResponse GimbalController::emergencyStop() {
     String detail = "";
     for (uint8_t i = 0; i < 2; i++) {
         bool isPan = (i == 0);
+        bool axisModeOk = true;
         MotorResponse rm = _axisSetMode(isPan, 0);
         if (!rm.valid) rm = _axisSetMode(isPan, 0);   // 重试一次
         if (!rm.valid) {
             ok = false;
+            axisModeOk = false;
             (isPan ? _panMode : _tiltMode) = -1;
             detail += String(isPan ? "pan" : "tilt") + " 切模式失败 ";
-            continue;
+            // F1: mode failure must NOT skip the zero-speed attempt — the motor may
+            // already be in speed mode from a prior session, so setSpeed(0) is
+            // still the best available stop for this axis.
         }
         MotorResponse re = _axisEnable(isPan);
         if (!re.valid) {
             ok = false;
-            (isPan ? _panMode : _tiltMode) = -1;
+            axisModeOk = false;
             detail += String(isPan ? "pan" : "tilt") + " 使能确认失败 ";
-            // F1: enable failure must NOT skip the zero-speed attempt — the motor
-            // may already be enabled from a prior session, so setSpeed(0) is still
-            // the best available stop for this axis.
+            // F1: enable failure must NOT skip the zero-speed attempt (same logic).
         }
         MotorResponse rs = _axisSetSpeed(isPan, 0);
         if (!rs.valid) {
             ok = false;
-            if ((isPan ? _panMode : _tiltMode) != -1) (isPan ? _panMode : _tiltMode) = -1;
+            axisModeOk = false;
             detail += String(isPan ? "pan" : "tilt") + " 速度0下发失败 ";
-            // F1: still no continue — fall through so the axis mode cache stays
-            // invalid and the other axis proceeds independently.
         }
-        (isPan ? _panMode : _tiltMode) = 0;   // 缓存与实际一致（速度模式）
+        // F1: only write a valid mode cache when all three steps succeeded.
+        // Any failure keeps the cache invalid (-1) so the next explicit command
+        // re-prepares mode, enable and speed instead of skipping initialization.
+        (isPan ? _panMode : _tiltMode) = axisModeOk ? 0 : -1;
     }
     r.valid = ok;
     r.parsed_text = detail + "失联停机命令已发送：双轴速度模式 0 RPM（保持力矩未由反馈确认）";
