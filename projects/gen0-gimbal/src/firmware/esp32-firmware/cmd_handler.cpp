@@ -122,17 +122,27 @@ void CmdHandler::processQueue() {
             flushLogs();
             // F2-new: drop only queued MOTION commands so old targets do not
             // execute after the stop. Parameter commands (PID, speed config,
-            // scan, query) queued after the stop must survive — blanket-draining
-            // them would silently eat new configuration.
-            BleCmdMsg peek;
-            while (_ble->popCommand(peek)) {
-                if (peek.isWifi) { _ble->queueCommand(peek); continue; }
-                String body(peek.json);
-                bool isMotion = body.indexOf("move") >= 0 || body.indexOf("center") >= 0 ||
-                                body.indexOf("jog") >= 0 || body.indexOf("set_angle") >= 0 ||
-                                body.indexOf("set_multi_angle") >= 0;
-                if (!isMotion) { _ble->queueCommand(peek); }
-                // Motion commands are silently dropped.
+            // scan, query) queued after the stop are preserved and processed
+            // directly — blanket-draining them would silently eat new config.
+            {
+                BleCmdMsg peek;
+                std::vector<BleCmdMsg> preserved;
+                while (_ble->popCommand(peek)) {
+                    if (peek.isWifi) continue;  // wifi handled separately, safe to drop
+                    String body(peek.json);
+                    bool isMotion = body.indexOf("move") >= 0 || body.indexOf("center") >= 0 ||
+                                    body.indexOf("jog") >= 0 || body.indexOf("set_angle") >= 0 ||
+                                    body.indexOf("set_multi_angle") >= 0;
+                    if (!isMotion) preserved.push_back(peek);
+                    // Motion commands are silently dropped.
+                }
+                // Process preserved (non-motion) commands directly instead of
+                // trying to re-queue them — popCommand removes from the queue
+                // and no push-back API exists on the BLE service.
+                for (const auto& saved : preserved) {
+                    if (!_ble->isConnected()) break;
+                    _handleMotorCmd(String(saved.json));
+                }
             }
             return;
         }
