@@ -116,7 +116,7 @@ class F32cBleGimbalLinkTest {
         link.emergencyStop(EStopReason.UserRequested)
         assertEquals(2, transport.commands.count { it.contains("\"jog\"") && it.contains("\"dir\":0") })
         assertEquals(GimbalMotionState.Fault, link.motion.value)
-        assertEquals("Emergency stop", link.telemetry.value.fault)
+        assertTrue(link.telemetry.value.fault.orEmpty().startsWith("Emergency stop"))
         runCurrent()
         assertEquals(GimbalEvent.EmergencyStopped(EStopReason.UserRequested), stopped)
     }
@@ -318,7 +318,70 @@ class F32cBleGimbalLinkTest {
         throw AssertionError("expected GimbalCommandException($expected)")
     }
 
-    private class FakeF32cBleTransport : F32cBleTransport {
+
+    // ---- 2026-09-16 PR #7 review blockers: A1 honest e-stop, A2 config-only speed, A3 per-axis freshness ----
+
+    @Test
+    fun emergencyStopReportsPanStopDeliveryFailureAndFallsBackToDisconnect() = runTest {
+        val link = connectedLink()
+        transport.failWriteFor("""{"cmd":"jog","axis":"pan","dir":0}""")
+        link.emergencyStop(EStopReason.UserRequested)
+        val jogs = transport.commands.filter { it.contains("jog") && it.contains("dir\":0") }
+        assertTrue("tilt stop must still be attempted", jogs.any { it.contains("tilt") })
+        assertTrue(
+            "fault must name the failed delivery",
+            link.telemetry.value.fault.orEmpty().contains("停止写入未送达"),
+        )
+        assertEquals(GimbalConnectionState.Disconnected, link.connection.value)
+        assertEquals(GimbalMotionState.Fault, link.motion.value)
+    }
+
+    @Test
+    fun emergencyStopSuccessMessageNeverClaimsPhysicalStopConfirmation() = runTest {
+        val link = connectedLink()
+        link.emergencyStop(EStopReason.UserRequested)
+        assertTrue(
+            "fault must say sent-not-confirmed",
+            link.telemetry.value.fault.orEmpty().contains("到位未确认"),
+        )
+    }
+
+    @Test
+    fun setSpeedUsesConfigOnlySetPositionSpeedNeverRawSetSpeed() = runTest {
+        val link = connectedLink()
+        link.setSpeed(60)
+        val speedWrites = transport.commands.filter { it.contains("speed") }
+        assertTrue(
+            "all speed writes must be config-only set_position_speed: $speedWrites",
+            speedWrites.all { it.contains("set_position_speed") },
+        )
+    }
+
+    @Test
+    fun setSpeedSurfacesFirmwareRejectionOfUnknownCommand() = runTest {
+        val link = connectedLink()
+        transport.onNextCommandResult =
+            """{"event":"cmd_result","ok":false,"msg":"未知命令: set_position_speed"}"""
+        assertRejects(GimbalCommandError.NotReady) { link.setSpeed(60) }
+    }
+
+    @Test
+    fun singleAxisRefreshDoesNotMakeStaleOtherAxisLookFresh() = runTest {
+        val link = connectedLink()
+        runCurrent()
+        // Pan keeps refreshing; tilt stops after connect. After >3s of only-pan
+        // updates the pose timestamp must reflect the stale tilt, not fresh pan.
+        nowUs += 3_600_000
+        emit("""{"event":"query_result","addr":1,"type":"total_angle","value":10.0}""")
+        runCurrent()
+        val telemetry = link.telemetry.value
+        assertTrue(
+            "pose measuredAtMs must be the oldest axis (tilt stale >=3s), was ${telemetry.measuredAtMs} vs now ${nowUs / 1000}",
+            nowUs / 1_000 - telemetry.measuredAtMs >= 3_000,
+        )
+    }
+
+    internal class FakeF32cBleTransport : F32cBleTransport {
         val commands = mutableListOf<String>()
 
         // Replay buffers keep fakes deterministic when the link's collectors subscribe
@@ -326,6 +389,7 @@ class F32cBleGimbalLinkTest {
         val notificationsBus = MutableSharedFlow<F32cBleNotification>(replay = 64)
         private val connectionLostBus = MutableSharedFlow<Unit>(replay = 1)
         var onNextCommandResult: String? = DEFAULT_OK_RESULT
+        var failWritePatterns: List<String> = emptyList()
         var onScanAnswer: String? = null
         var emitGimbalStateAfterScan: Boolean = true
 
@@ -348,6 +412,9 @@ class F32cBleGimbalLinkTest {
         override suspend fun connect(id: String, timeoutMs: Long) = Unit
 
         override suspend fun writeCommand(json: String): F32cWriteReceipt {
+            if (failWritePatterns.any { json.contains(it) }) {
+                throw IllegalStateException("injected write failure: $json")
+            }
             commands += json
             when {
                 json.contains("\"scan\"") -> {
@@ -377,6 +444,10 @@ class F32cBleGimbalLinkTest {
 
         fun loseConnection() {
             connectionLostBus.tryEmit(Unit)
+        }
+
+        fun failWriteFor(pattern: String) {
+            failWritePatterns = failWritePatterns + pattern
         }
 
         fun emit(payload: String) {

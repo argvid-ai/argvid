@@ -88,7 +88,14 @@ class SessionRuntime(
         sampler = AudioVideoSampler(sampler, microphone),
         buffer = audioVideoBuffer,
         preview = CapturePreviewPort { },
-        gimbal = CaptureGimbalPort { scope.launch { gimbal.hold() } },
+        gimbal = CaptureGimbalPort {
+            scope.launch {
+                gimbal.hold()
+                // The real BLE gimbal is a separate controller; a capture stop must
+                // hold it too, not only the simulator.
+                runCatching { bleGimbal.hold() }
+            }
+        },
         clock = clock,
         scope = scope,
         initialState = ai.argvid.gen0.domain.session.SessionState.Idle,

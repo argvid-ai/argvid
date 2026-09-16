@@ -91,6 +91,11 @@ interface FaceDetectionSource {
     fun stop()
 }
 
+/** Stops real-gimbal motion (hold) for app stop/background teardown. */
+fun interface RealGimbalTeardown {
+    suspend fun hold(): Boolean
+}
+
 /**
  * Applies bounded, measured-angle tracking corrections through the gimbal
  * controller. Tracking must use the controller boundary so capability ranges
@@ -119,6 +124,7 @@ class SessionViewModel(
     private val detection: FaceDetectionSource? = null,
     private val trackingDriver: GimbalTrackingDriver? = null,
     private val trackingGimbal: SessionGimbalStatus? = null,
+    private val realGimbalTeardown: RealGimbalTeardown? = null,
     private val subjectTracker: GimbalSubjectTracker = GimbalSubjectTracker(
         // Phone-camera FOV defaults; axis signs assume an upright camera mount.
         // Calibrate both on the approved device before relying on tracking.
@@ -477,15 +483,38 @@ class SessionViewModel(
         refresh()
     }
 
+    /**
+     * Unified teardown for real control: cancel tracking, stop detection, and
+     * hold the real gimbal. Covers capture-stop, app-background and source
+     * switches; re-enabling tracking always needs a fresh opt-in.
+     */
+    private fun teardownRealControl() {
+        if (subjectDetection.trackingEnabled) {
+            setTrackingEnabled(false)
+        }
+        actionScope.launch {
+            realGimbalTeardown?.let { runCatching { it.hold() } }
+        }
+    }
+
     fun onAppStopped() {
-        if ((capture.state.value == SessionState.Idle || capture.state.value == SessionState.Ended) &&
-            mutableUiState.value.permissionRequest == null && startJob?.isActive != true) return
-        stop(StopReason.Background, requireResume = true)
+        // Real-control teardown runs regardless of capture state: tracking and the
+        // real BLE gimbal can be active while the capture pipeline is idle (the
+        // independent gimbal console path), so the early return must not skip it.
+        val captureIdle =
+            (capture.state.value == SessionState.Idle || capture.state.value == SessionState.Ended) &&
+            mutableUiState.value.permissionRequest == null && startJob?.isActive != true
+        if (!captureIdle) {
+            stop(StopReason.Background, requireResume = true)
+        } else {
+            teardownRealControl()
+        }
     }
 
     private fun stop(reason: StopReason, requireResume: Boolean) {
         startJob?.cancel()
         permissionCoordinator.cancelPendingRequest()
+        teardownRealControl()
         moments.onStop()
         resumeConfirmationRequired = requireResume
         permissionMessage = null

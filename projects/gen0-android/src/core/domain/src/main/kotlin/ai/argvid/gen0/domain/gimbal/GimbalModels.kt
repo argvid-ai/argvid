@@ -61,6 +61,9 @@ data class GimbalTelemetry(
     val lastAckSeq: UShort? = null,
     /** Monotonic-ms when the angles were last measured; 0 means never measured. */
     val measuredAtMs: Long = 0L,
+    /** Per-axis sample times; pose freshness uses the oldest of the required axes. */
+    val panMeasuredAtMs: Long = 0L,
+    val tiltMeasuredAtMs: Long = 0L,
 )
 
 enum class GimbalMode {

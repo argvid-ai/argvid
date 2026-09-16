@@ -126,6 +126,11 @@ fun Gen0App() {
                             }.getOrDefault(false)
                     },
                     trackingGimbal = DomainSessionGimbal(runtime.bleGimbal),
+                    realGimbalTeardown = ai.argvid.gen0.session.RealGimbalTeardown {
+                        runCatching {
+                            runtime.bleGimbal.hold() is CommandResult.Accepted
+                        }.getOrDefault(false)
+                    },
                 )
             }
         }

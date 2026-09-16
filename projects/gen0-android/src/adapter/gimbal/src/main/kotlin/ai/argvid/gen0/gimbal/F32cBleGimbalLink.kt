@@ -204,12 +204,14 @@ class F32cBleGimbalLink(
     override suspend fun setSpeed(rpm: Int): CommandReceipt = commandMutex.withLock {
         requireReady()
         if (rpm !in 1..MAX_SPEED_RPM) reject(GimbalCommandError.SpeedOutOfRange)
-        // Per-axis single-motor commands; the firmware caches these as the
-        // position speed for subsequent moves (and restores them after a link
-        // loss). Fire both writes without waiting for cmd_result so the caller's
-        // command budget is not consumed by two round trips.
-        transport.writeCommand("""{"cmd":"set_speed","addr":$axisPan,"rpm":$rpm}""")
-        transport.writeCommand("""{"cmd":"set_speed","addr":$axisTilt,"rpm":$rpm}""")
+        // Config-only command under the paired firmware (#8 line): raw set_speed
+        // is an immediate-motion motor-console command there, so using it here
+        // could start rotation after a Hold. set_position_speed only updates the
+        // cached position speed for subsequent explicit moves; a firmware that
+        // does not know it answers cmd_result ok=false, which surfaces as a
+        // rejection instead of silently falling back to raw set_speed.
+        writeAwaitingResult("""{"cmd":"set_position_speed","addr":$axisPan,"rpm":$rpm}""")
+        writeAwaitingResult("""{"cmd":"set_position_speed","addr":$axisTilt,"rpm":$rpm}""")
         CommandReceipt(nextControlSeq(), clock.nowUs())
     }
 
@@ -275,17 +277,45 @@ class F32cBleGimbalLink(
         if (state != GimbalConnectionState.Ready && state != GimbalConnectionState.Connecting) {
             reject(GimbalCommandError.NotReady)
         }
-        if (state == GimbalConnectionState.Connecting) {
-            // Abort the handshake; no motion command can be in flight yet, and this
-            // makes the stop button meaningful during the whole connect window.
-            runCatching { transport.disconnect() }
-        } else {
-            runCatching { stopBothAxes() }
-        }
+        // Latch BEFORE any writes: a concurrent send that checks the latch after
+        // this point cannot issue new motion, and no callback path un-latches.
         estopLatched = true
         // Unblock a send that is mid cmd_result wait so it cannot override Fault.
         pendingCommandResult?.complete(true to "superseded by emergency stop")
-        mutableTelemetry.value = mutableTelemetry.value.copy(fault = "Emergency stop")
+
+        var deliveryFailure: String? = null
+        if (state == GimbalConnectionState.Connecting) {
+            // Abort the handshake; no motion command can be in flight yet, and this
+            // makes the stop button meaningful during the whole connect window.
+            try {
+                transport.disconnect()
+            } catch (error: Throwable) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                deliveryFailure = "连接中止失败：${error.message}"
+            }
+        } else {
+            // Best-effort per-axis stop: one axis failing must not prevent the
+            // other axis stop from being attempted.
+            val panStop = stopAxisBestEffort(axisName = "pan")
+            val tiltStop = stopAxisBestEffort(axisName = "tilt")
+            val failures = listOfNotNull(panStop, tiltStop)
+            if (failures.isNotEmpty()) {
+                deliveryFailure = "停止写入未送达：${failures.joinToString("、")}"
+                // Controlled disconnect fallback: the firmware fail-stops both
+                // axes (0 RPM, torque held) when the BLE link drops — the only
+                // remaining guaranteed stop when stop writes cannot be delivered.
+                runCatching { transport.disconnect() }
+                mutableConnection.value = GimbalConnectionState.Disconnected
+            }
+        }
+        // The receipt reports the request chain, never physical stop confirmation;
+        // the fault line states delivery status explicitly.
+        val faultText = if (deliveryFailure != null) {
+            "Emergency stop（$deliveryFailure，已断连兜底）"
+        } else {
+            "Emergency stop（停止命令已发送，到位未确认）"
+        }
+        mutableTelemetry.value = mutableTelemetry.value.copy(fault = faultText)
         setMotion(GimbalMotionState.Fault)
         eventBus.tryEmit(GimbalEvent.EmergencyStopped(reason))
         return CommandReceipt(nextControlSeq(), clock.nowUs())
@@ -361,10 +391,13 @@ class F32cBleGimbalLink(
                 )
                 reject(GimbalCommandError.TiltOutOfRange)
             }
+            val baselineMs = clock.nowUs() / 1_000
             mutableTelemetry.value = mutableTelemetry.value.copy(
                 panDeg = pan,
                 tiltDeg = tilt,
-                measuredAtMs = clock.nowUs() / 1_000,
+                panMeasuredAtMs = baselineMs,
+                tiltMeasuredAtMs = baselineMs,
+                measuredAtMs = baselineMs,
             )
         } finally {
             pendingBaselineAngles = null
@@ -394,6 +427,15 @@ class F32cBleGimbalLink(
             awaitingCommandResult = false
             pendingCommandResult = null
         }
+    }
+
+    /** One axis stop write; returns null on success or a failure description. */
+    private suspend fun stopAxisBestEffort(axisName: String): String? = try {
+        transport.writeCommand("""{"cmd":"jog","axis":"$axisName","dir":0}""")
+        null
+    } catch (error: Throwable) {
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        "$axisName: ${error.message ?: "write failed"}"
     }
 
     /** Stop both axes with the firmware's queue-bypassing stop (P1-2); keeps torque. */
@@ -447,10 +489,22 @@ class F32cBleGimbalLink(
     }
 
     private fun onMeasuredAngle(addr: Int, angleDeg: Double) {
+        val nowMs = clock.nowUs() / 1_000
         val current = mutableTelemetry.value
+        // Per-axis sample times: a fresh pan reading must not make a stale tilt
+        // angle look fresh. Pose freshness uses the OLDEST of the two axes, so a
+        // relative nudge can only anchor on a fully fresh pose.
         val updated = when (addr) {
-            axisPan -> current.copy(panDeg = angleDeg, measuredAtMs = clock.nowUs() / 1_000)
-            axisTilt -> current.copy(tiltDeg = angleDeg, measuredAtMs = clock.nowUs() / 1_000)
+            axisPan -> current.copy(
+                panDeg = angleDeg,
+                panMeasuredAtMs = nowMs,
+                measuredAtMs = minOf(nowMs, current.tiltMeasuredAtMs ?: nowMs),
+            )
+            axisTilt -> current.copy(
+                tiltDeg = angleDeg,
+                tiltMeasuredAtMs = nowMs,
+                measuredAtMs = minOf(nowMs, current.panMeasuredAtMs ?: nowMs),
+            )
             else -> return
         }
         mutableTelemetry.value = updated
