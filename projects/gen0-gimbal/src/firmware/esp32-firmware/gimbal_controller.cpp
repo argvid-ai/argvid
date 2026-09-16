@@ -295,14 +295,17 @@ MotorResponse GimbalController::emergencyStop() {
             ok = false;
             (isPan ? _panMode : _tiltMode) = -1;
             detail += String(isPan ? "pan" : "tilt") + " 使能确认失败 ";
-            continue;
+            // F1: enable failure must NOT skip the zero-speed attempt — the motor
+            // may already be enabled from a prior session, so setSpeed(0) is still
+            // the best available stop for this axis.
         }
         MotorResponse rs = _axisSetSpeed(isPan, 0);
         if (!rs.valid) {
             ok = false;
-            (isPan ? _panMode : _tiltMode) = -1;
+            if ((isPan ? _panMode : _tiltMode) != -1) (isPan ? _panMode : _tiltMode) = -1;
             detail += String(isPan ? "pan" : "tilt") + " 速度0下发失败 ";
-            continue;
+            // F1: still no continue — fall through so the axis mode cache stays
+            // invalid and the other axis proceeds independently.
         }
         (isPan ? _panMode : _tiltMode) = 0;   // 缓存与实际一致（速度模式）
     }

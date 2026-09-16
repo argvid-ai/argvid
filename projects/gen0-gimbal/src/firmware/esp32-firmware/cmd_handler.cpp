@@ -102,6 +102,35 @@ void CmdHandler::processQueue() {
 
     BleCmdMsg msg;
     while (_ble->popCommand(msg)) {
+        // F2: safety preemption between EVERY queued command — a stop or
+        // disconnect that arrived while a previous command was executing must
+        // take effect before the next motion-driving command runs. Without this,
+        // a blocking position-safety query could return and still issue
+        // setMode/enable/speed/target after the stop was consumed once at the
+        // top of processQueue.
+        if (_ble->takeDisconnectEvent()) {
+            _handleDisconnect();
+            // Connection is gone; drain and exit.
+            BleCmdMsg drop;
+            while (_ble->popCommand(drop)) {}
+            return;
+        }
+        bool sPan, sTilt;
+        if (_ble->takeStopRequest(sPan, sTilt)) {
+            if (sPan)  _gimbal->jog("pan", 0, 0);
+            if (sTilt) _gimbal->jog("tilt", 0, 0);
+            flushLogs();
+            // Stop consumed: drop the remaining queued motion commands so old
+            // targets do not execute after the stop.
+            BleCmdMsg drop;
+            while (_ble->popCommand(drop)) {}
+            return;
+        }
+        if (!_ble->isConnected()) {
+            BleCmdMsg drop;
+            while (_ble->popCommand(drop)) {}
+            return;
+        }
         if (msg.isWifi) {
             _handleWifiCmd(String(msg.json));
         } else {

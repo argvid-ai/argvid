@@ -1462,7 +1462,7 @@ def api_gimbal_move():
                 GIMBAL["pan_mode"] = 2
             r = _send_axis("pan", "set_single_angle", round(pan % 360, 1))
             if r.valid: GIMBAL["pan_angle"] = pan
-            sent.append(f"水平目标 {pan:+.1f}°{'已确认' if r.valid else '发送/确认失败'}")
+            sent.append(f"水平目标 {pan:+.1f}°{'目标已发送，到位未确认' if r.valid else '发送失败'}")
         if tilt is not None:
             tilt = max(-90.0, min(90.0, tilt))
             if GIMBAL["tilt_mode"] != 2:
@@ -1471,7 +1471,7 @@ def api_gimbal_move():
                 GIMBAL["tilt_mode"] = 2
             r = _send_axis("tilt", "set_single_angle", round(tilt % 360, 1))
             if r.valid: GIMBAL["tilt_angle"] = tilt
-            sent.append(f"垂直目标 {tilt:+.1f}°{'已确认' if r.valid else '发送/确认失败'}")
+            sent.append(f"垂直目标 {tilt:+.1f}°{'目标已发送，到位未确认' if r.valid else '发送失败'}")
         return resp(True, " · ".join(sent) if sent else "无参数",
                     pan_angle=GIMBAL["pan_angle"], tilt_angle=GIMBAL["tilt_angle"])
     except Exception as e:
