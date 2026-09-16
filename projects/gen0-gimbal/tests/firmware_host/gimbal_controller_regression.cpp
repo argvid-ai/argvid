@@ -21,6 +21,9 @@ class FakeMotorSerial final : public HardwareSerial {
   int32_t tiltTotal = 100;   // 10.0 degrees.
   bool wrongTotalType = false;
   bool dropTotalResponse = false;
+  // F1 fault injection: drop responses for specific function codes on specific axes.
+  uint8_t failEnableAddr = 0;   // nonzero = enable response dropped for that addr
+  uint8_t failSetModeAddr = 0;  // nonzero = set-mode response dropped for that addr
 
   int available() override { return static_cast<int>(rx.size()); }
   int read() override {
@@ -38,6 +41,13 @@ class FakeMotorSerial final : public HardwareSerial {
         queueResponse(f.addr, wrongTotalType ? F32CMotor::RT_SPEED : f.data[0],
                       f.addr == 1 ? panTotal : tiltTotal);
       }
+    }
+    // F1 fault injection: drop enable/mode responses to simulate UART failures.
+    if (f.func == F32CMotor::FC_ENABLE && f.addr == failEnableAddr) {
+      return len;  // no response queued — motor "fails" to confirm enable
+    }
+    if (f.func == F32CMotor::FC_SET_MODE && f.addr == failSetModeAddr) {
+      return len;  // no response — mode-set fails
     }
     return len;
   }
@@ -188,11 +198,74 @@ void testCenterRejectsStaleOrWrongTelemetry() {
 }
 }  // namespace
 
+
+// F1 regression: enable failure must not skip zero-speed for that axis.
+// Reproduces the exact scenario from the review: pan enabled, jog at 60 RPM,
+// then a redundant enable with a short UART write — the old `continue` would
+// skip setSpeed(0) for pan, leaving it spinning.
+void testF1EnableFailureStillAttemptsZeroSpeed() {
+  FakeMotorSerial serial;
+  serial.failEnableAddr = 1;  // pan enable responses dropped
+  F32CMotor motor;
+  motor.begin(&serial, 1);
+  GimbalController gimbal;
+  gimbal.begin(&motor);
+  gimbal.config(1, 2);
+
+  MotorResponse r = gimbal.emergencyStop();
+  require(!r.valid, "e-stop reports failure when enable confirmation is dropped");
+
+  // The critical assertion: pan must still get a FC_SET_SPEED frame with
+  // speed 0, even though the enable step failed.
+  bool panZeroSent = false;
+  bool tiltZeroSent = false;
+  for (const Frame& f : serial.frames) {
+    if (f.func == F32CMotor::FC_SET_SPEED && f.addr == 1) {
+      const int16_t speed = static_cast<int16_t>((uint16_t(f.data[0]) << 8) | f.data[1]);
+      if (speed == 0) panZeroSent = true;
+    }
+    if (f.func == F32CMotor::FC_SET_SPEED && f.addr == 2) {
+      const int16_t speed = static_cast<int16_t>((uint16_t(f.data[0]) << 8) | f.data[1]);
+      if (speed == 0) tiltZeroSent = true;
+    }
+  }
+  require(panZeroSent, "F1: pan zero-speed must still be attempted after enable failure");
+  require(tiltZeroSent, "F1: tilt zero-speed must still be sent (independent of pan failure)");
+}
+
+// F1 companion: set-mode failure also must not skip zero-speed.
+void testF1SetModeFailureStillAttemptsZeroSpeed() {
+  FakeMotorSerial serial;
+  serial.failSetModeAddr = 1;
+  F32CMotor motor;
+  motor.begin(&serial, 1);
+  GimbalController gimbal;
+  gimbal.begin(&motor);
+  gimbal.config(1, 2);
+
+  MotorResponse r = gimbal.emergencyStop();
+  require(!r.valid, "e-stop reports failure when mode-set confirmation is dropped");
+
+  bool panZeroSent = false;
+  bool tiltZeroSent = false;
+  for (const Frame& f : serial.frames) {
+    if (f.func == F32CMotor::FC_SET_SPEED) {
+      const int16_t speed = static_cast<int16_t>((uint16_t(f.data[0]) << 8) | f.data[1]);
+      if (f.addr == 1 && speed == 0) panZeroSent = true;
+      if (f.addr == 2 && speed == 0) tiltZeroSent = true;
+    }
+  }
+  require(panZeroSent, "F1: pan zero-speed attempted even after mode-set failure");
+  require(tiltZeroSent, "F1: tilt zero-speed unaffected by pan mode-set failure");
+}
+
 int main() {
   testModeRecoveryAfterMotorOnlyReboot();
   testCenterUsesNearestPanTurn();
   testTiltOutOfRangeCenterIsRejectedAndStopped();
   testCenterRejectsStaleOrWrongTelemetry();
-  std::cout << "firmware host regression: 4 tests passed\n";
+  testF1EnableFailureStillAttemptsZeroSpeed();
+  testF1SetModeFailureStillAttemptsZeroSpeed();
+  std::cout << "firmware host regression: 6 tests passed\n";
   return 0;
 }
