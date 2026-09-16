@@ -44,7 +44,7 @@ class FaceDetectionPipeline(
     inferenceDispatcher: CoroutineDispatcher,
     private val analysisIntervalMs: Long = DEFAULT_ANALYSIS_INTERVAL_MS,
 ) {
-    private val appContext = context.applicationContext
+    private val appContext by lazy { context.applicationContext }
     private val inferenceWorker = inferenceDispatcher.limitedParallelism(1)
     private var detector: FaceDetector? = null
     private var collectJob: Job? = null

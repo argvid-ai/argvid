@@ -658,6 +658,85 @@ class SessionViewModelTest {
         assertEquals("settled correction must issue", 2, nudges.size)
     }
 
+    // ---- A4: unified real-control teardown ----
+
+    @Test
+    fun stopActionTearsDownTrackingAndHoldsRealGimbal() = runTest {
+        val source = FakeDetectionSource()
+        var holds = 0
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+            realGimbalTeardown = { holds++; true },
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        assertTrue(viewModel.uiState.value.subjectDetection.trackingEnabled)
+        viewModel.onAction(SessionAction.Stop)
+        runCurrent()
+        assertFalse("STOP must disable tracking", viewModel.uiState.value.subjectDetection.trackingEnabled)
+        assertEquals("STOP must stop the detection source", 1, source.stopped)
+        assertEquals("STOP must hold the real gimbal", 1, holds)
+    }
+
+    @Test
+    fun appStoppedTearsDownEvenWhenCaptureIsIdle() = runTest {
+        val source = FakeDetectionSource()
+        var holds = 0
+        val capture = FakeSessionCapture()
+        capture.state.value = SessionState.Idle
+        val viewModel = SessionViewModel(
+            capture = capture,
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+            realGimbalTeardown = { holds++; true },
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        viewModel.onAppStopped()
+        runCurrent()
+        // Capture was Idle — the old code would have early-returned and skipped
+        // the real-control teardown entirely.
+        assertFalse("onAppStopped must disable tracking even with idle capture",
+            viewModel.uiState.value.subjectDetection.trackingEnabled)
+        assertEquals(1, source.stopped)
+        assertEquals(1, holds)
+    }
+
+    @Test
+    fun reEnablingTrackingAfterTeardownRequiresNewOptIn() = runTest {
+        val source = FakeDetectionSource()
+        val viewModel = SessionViewModel(
+            capture = FakeSessionCapture(),
+            moments = FakeSessionMoments(),
+            gimbal = FakeSessionGimbal(),
+            permissionCoordinator = PermissionCoordinator(),
+            clock = MonotonicClock { testScheduler.currentTime * 1_000 },
+            scope = backgroundScope,
+            detection = source,
+        )
+        viewModel.onAction(SessionAction.SetTrackingEnabled(true))
+        runCurrent()
+        viewModel.onAppStopped()
+        runCurrent()
+        assertFalse(viewModel.uiState.value.subjectDetection.trackingEnabled)
+        assertEquals(1, source.stopped)
+        // Tracking stays off after app stop; nothing auto-resumes it.
+        runCurrent()
+        testScheduler.advanceTimeBy(5_000)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.subjectDetection.trackingEnabled)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.viewModel(
         capture: FakeSessionCapture = FakeSessionCapture(),
         moments: FakeSessionMoments = FakeSessionMoments(),

@@ -1,6 +1,6 @@
 # Third-party and data review
 
-Review status: required. This inventory is engineering evidence, not legal, publication/IP, compatibility or release approval. Project source/documentation and authored fixtures/vectors declare Apache-2.0; dependencies and platform tools retain their own terms. No hardware sources, model weights, private data or third-party photographs are included.
+Review status: required. This inventory is engineering evidence, not legal, publication/IP, compatibility or release approval. Project source/documentation and authored fixtures/vectors declare Apache-2.0; dependencies and platform tools retain their own terms. No hardware sources, private data or third-party photographs are included. One reviewed Apache-2.0 model weight (MediaPipe BlazeFace short-range) is bundled as a local asset for the opt-in face-tracking feature; see the "Bundled model asset" section below.
 
 ## Pinned direct components
 

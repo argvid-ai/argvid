@@ -4,9 +4,9 @@ Gen0 Camera delivers foreground local audio/video capture/rescue, Android MediaS
 
 ## Delivery and boundaries
 
-The Gradle build and all eight modules are under `src`. App identity `ai.argvid.gen0.camera` creates a separate sandbox with a fresh local-only Room baseline. Media contains only synthetic numbered color-bar fixtures; no personal recordings, screenshots, model weights, remote endpoints, runtime keys, or hardware design files are required. Dependencies and artifact hashes are public and pinned; their declarations and notices are tracked in [THIRD_PARTY](THIRD_PARTY.md).
+The Gradle build and all eight modules are under `src`. App identity `ai.argvid.gen0.camera` creates a separate sandbox with a fresh local-only Room baseline. Media contains only synthetic numbered color-bar fixtures; no personal recordings, screenshots, remote endpoints, runtime keys, or hardware design files are required. A reviewed Apache-2.0 MediaPipe BlazeFace model is bundled for the opt-in face-tracking feature (see THIRD_PARTY for provenance). Dependencies and artifact hashes are public and pinned; their declarations and notices are tracked in [THIRD_PARTY](THIRD_PARTY.md).
 
-Implemented layers are L4, L1.5, L1. Media, simulated Transport, Evaluation, and Data Governance are cross-cutting planes, not extra layers. [architecture.md](architecture.md) maps every canonical row. Root architecture and accepted decisions remain authoritative; no layer or safety constraint is overridden. There is no L3 decision model, canonical L2 implementation, physical BLE, or hardware L0 safety claim.
+Implemented layers are L4, L1.5, L1. Media, simulated Transport, Evaluation, and Data Governance are cross-cutting planes, not extra layers. [architecture.md](architecture.md) maps every canonical row. Root architecture and accepted decisions remain authoritative; no layer or safety constraint is overridden. There is no L3 decision model or canonical L2 implementation. An opt-in project-local F32C BLE bridge is implemented (adapter/gimbal) and field-tested on one approved device for bounded position moves, hold and e-stop; it is not a hardware L0 safety claim or a canonical L2 transport.
 
 ## Project preimplementation facts
 
