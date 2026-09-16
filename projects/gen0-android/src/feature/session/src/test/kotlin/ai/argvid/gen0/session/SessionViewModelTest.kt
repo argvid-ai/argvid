@@ -672,7 +672,10 @@ class SessionViewModelTest {
             clock = MonotonicClock { testScheduler.currentTime * 1_000 },
             scope = backgroundScope,
             detection = source,
-            realGimbalTeardown = { holds++; true },
+            realGimbalTeardown = object : RealGimbalTeardown {
+                override suspend fun hold(): Boolean { holds++; return true }
+                override suspend fun disconnect(): Boolean = true
+            },
         )
         viewModel.onAction(SessionAction.SetTrackingEnabled(true))
         runCurrent()
@@ -698,7 +701,10 @@ class SessionViewModelTest {
             clock = MonotonicClock { testScheduler.currentTime * 1_000 },
             scope = backgroundScope,
             detection = source,
-            realGimbalTeardown = { holds++; true },
+            realGimbalTeardown = object : RealGimbalTeardown {
+                override suspend fun hold(): Boolean { holds++; return true }
+                override suspend fun disconnect(): Boolean = true
+            },
         )
         viewModel.onAction(SessionAction.SetTrackingEnabled(true))
         runCurrent()

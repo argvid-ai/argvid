@@ -126,10 +126,17 @@ fun Gen0App() {
                             }.getOrDefault(false)
                     },
                     trackingGimbal = DomainSessionGimbal(runtime.bleGimbal),
-                    realGimbalTeardown = ai.argvid.gen0.session.RealGimbalTeardown {
-                        runCatching {
-                            runtime.bleGimbal.hold() is CommandResult.Accepted
-                        }.getOrDefault(false)
+                    realGimbalTeardown = object : ai.argvid.gen0.session.RealGimbalTeardown {
+                        override suspend fun hold(): Boolean =
+                            runCatching {
+                                runtime.bleGimbal.hold() is CommandResult.Accepted
+                            }.getOrDefault(false)
+
+                        override suspend fun disconnect(): Boolean =
+                            runCatching {
+                                runtime.bleGimbal.disconnect()
+                                true
+                            }.getOrDefault(false)
                     },
                 )
             }

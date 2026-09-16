@@ -75,7 +75,7 @@ class FaceDetectionPipeline(
     fun start() {
         if (collectJob?.isActive == true) return
         failureBus.value = null
-        collectJob = scope.launch {
+        collectJob = scope.launch(inferenceWorker) {
             var latest: ProxyFrame? = null
             val latestFrame = launch {
                 frames.collect { frame ->

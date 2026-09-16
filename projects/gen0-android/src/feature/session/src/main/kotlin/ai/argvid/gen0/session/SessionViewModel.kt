@@ -91,9 +91,13 @@ interface FaceDetectionSource {
     fun stop()
 }
 
-/** Stops real-gimbal motion (hold) for app stop/background teardown. */
-fun interface RealGimbalTeardown {
+/** Stops real-gimbal motion for app stop/background teardown. */
+interface RealGimbalTeardown {
+    /** Bounded hold; true only if accepted, false on rejection/timeout. */
     suspend fun hold(): Boolean
+
+    /** Controlled disconnect — the firmware fail-stops both axes on link loss. */
+    suspend fun disconnect(): Boolean
 }
 
 /**
@@ -493,7 +497,19 @@ class SessionViewModel(
             setTrackingEnabled(false)
         }
         actionScope.launch {
-            realGimbalTeardown?.let { runCatching { it.hold() } }
+            val teardown = realGimbalTeardown ?: return@launch
+            val held = runCatching { teardown.hold() }.getOrDefault(false)
+            if (!held) {
+                // Hold failed or returned false: fall back to a controlled
+                // disconnect — the firmware fail-stops both axes on link loss.
+                val disconnected = runCatching { teardown.disconnect() }.getOrDefault(false)
+                gimbalNotice = if (disconnected) {
+                    "停止保持失败，已断开真实云台连接（固件断链停机兜底）"
+                } else {
+                    "停止保持与断连均失败，真实云台状态未知，请手动检查"
+                }
+                refresh()
+            }
         }
     }
 

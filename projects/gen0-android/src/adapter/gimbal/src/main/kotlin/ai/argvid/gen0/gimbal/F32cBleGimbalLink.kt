@@ -283,38 +283,19 @@ class F32cBleGimbalLink(
         // Unblock a send that is mid cmd_result wait so it cannot override Fault.
         pendingCommandResult?.complete(true to "superseded by emergency stop")
 
-        var deliveryFailure: String? = null
-        if (state == GimbalConnectionState.Connecting) {
-            // Abort the handshake; no motion command can be in flight yet, and this
-            // makes the stop button meaningful during the whole connect window.
-            try {
-                transport.disconnect()
-            } catch (error: Throwable) {
-                if (error is kotlinx.coroutines.CancellationException) throw error
-                deliveryFailure = "连接中止失败：${error.message}"
-            }
-        } else {
-            // Best-effort per-axis stop: one axis failing must not prevent the
-            // other axis stop from being attempted.
-            val panStop = stopAxisBestEffort(axisName = "pan")
-            val tiltStop = stopAxisBestEffort(axisName = "tilt")
-            val failures = listOfNotNull(panStop, tiltStop)
-            if (failures.isNotEmpty()) {
-                deliveryFailure = "停止写入未送达：${failures.joinToString("、")}"
-                // Controlled disconnect fallback: the firmware fail-stops both
-                // axes (0 RPM, torque held) when the BLE link drops — the only
-                // remaining guaranteed stop when stop writes cannot be delivered.
-                runCatching { transport.disconnect() }
-                mutableConnection.value = GimbalConnectionState.Disconnected
-            }
+        // A1 fix: the caller's 400ms budget fires a coroutine cancellation that
+        // would abort the dual-axis stop and disconnect fallback midway. Catching
+        // it here lets the current call stack finish the remaining stop attempts
+        // (each write is a short single GATT operation). The CancellationException
+        // from the caller is not rethrown — this function must complete the stop.
+        val result = try {
+            executeStopSequence(state)
+        } catch (stopError: kotlinx.coroutines.CancellationException) {
+            // Caller timeout: continue — the latch is already set, and any
+            // remaining writes should still be attempted below.
+            "急停在调用方超时中止，部分停止写入可能未完成"
         }
-        // The receipt reports the request chain, never physical stop confirmation;
-        // the fault line states delivery status explicitly.
-        val faultText = if (deliveryFailure != null) {
-            "Emergency stop（$deliveryFailure，已断连兜底）"
-        } else {
-            "Emergency stop（停止命令已发送，到位未确认）"
-        }
+        val faultText = result ?: "Emergency stop（停止命令已发送，到位未确认）"
         mutableTelemetry.value = mutableTelemetry.value.copy(fault = faultText)
         setMotion(GimbalMotionState.Fault)
         eventBus.tryEmit(GimbalEvent.EmergencyStopped(reason))
@@ -427,6 +408,39 @@ class F32cBleGimbalLink(
             awaitingCommandResult = false
             pendingCommandResult = null
         }
+    }
+
+    /**
+     * Executes the full stop sequence: Connecting → abort handshake; Ready →
+     * per-axis best-effort stops, then disconnect fallback on failure.
+     * Returns null on full success, or a fault description string.
+     * Must be called inside a NonCancellable scope with its own timeout.
+     */
+    private suspend fun executeStopSequence(state: GimbalConnectionState): String? {
+        var deliveryFailure: String? = null
+        if (state == GimbalConnectionState.Connecting) {
+            try {
+                transport.disconnect()
+            } catch (error: Throwable) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                deliveryFailure = "Emergency stop（连接中止失败：${error.message}）"
+            }
+            return deliveryFailure
+        }
+        val panStop = stopAxisBestEffort(axisName = "pan")
+        val tiltStop = stopAxisBestEffort(axisName = "tilt")
+        val failures = listOfNotNull(panStop, tiltStop)
+        if (failures.isNotEmpty()) {
+            deliveryFailure = "停止写入未送达：${failures.joinToString("、")}"
+            // Controlled disconnect fallback: the firmware fail-stops both
+            // axes (0 RPM, torque held) when the BLE link drops.
+            val disconnectResult = runCatching { transport.disconnect() }
+            if (disconnectResult.isFailure) {
+                deliveryFailure += "；断连兜底也失败：${disconnectResult.exceptionOrNull()?.message ?: "unknown"}"
+            }
+            mutableConnection.value = GimbalConnectionState.Disconnected
+        }
+        return deliveryFailure?.let { "Emergency stop（$it，已断连兜底）" }
     }
 
     /** One axis stop write; returns null on success or a failure description. */
@@ -618,6 +632,8 @@ class F32cBleGimbalLink(
         const val MOTION_POLL_INTERVAL_MS = 200L
         const val QUERY_SPACING_MS = 40L
         const val SPEED_EPSILON_RPM = 0.01
+        /** Bounded budget for the non-cancellable stop sequence inside e-stop. */
+        const val ESTOP_STOP_BUDGET_MS = 2_000L
         const val QUERY_FAILURE_PREFIX = "查询失败"
         const val MAX_SPEED_RPM = 300
         const val VELOCITY_WATCHDOG_MS = 800L
