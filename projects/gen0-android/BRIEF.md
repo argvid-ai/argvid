@@ -10,7 +10,7 @@ Acceptance checks are the exact unit/lint/debug-build, instrumentation-compilati
 
 ## Non-goals
 
-No cloud/provider path, presets, reshoot suggestions, decision model, canonical L2 schema, physical BLE, automatic face detector, hardware L0 implementation, process-death recovery service, release signing, or production/safety certification. Changes to shared protocols require root RFC and conformance review.
+No cloud/provider path, presets, reshoot suggestions, decision model, canonical L2 schema, hardware L0 implementation, process-death recovery service, release signing, or production/safety certification. An opt-in project-local F32C BLE bridge and a reviewed local BlazeFace face detector are implemented behind an explicit real-gimbal source selection; neither is a canonical L2 transport or a cloud model, and both remain pending device-matrix and HIL acceptance. Changes to shared protocols require root RFC and conformance review.
 
 ## Scope and review
 

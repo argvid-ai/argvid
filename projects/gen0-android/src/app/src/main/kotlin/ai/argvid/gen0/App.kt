@@ -4,9 +4,13 @@ import ai.argvid.gen0.session.AppPermission
 import ai.argvid.gen0.session.DomainSessionCapture
 import ai.argvid.gen0.session.DomainSessionGimbal
 import ai.argvid.gen0.session.DomainSessionMoments
+import ai.argvid.gen0.session.GimbalConsoleRoute
+import ai.argvid.gen0.session.GimbalConsoleViewModel
+import ai.argvid.gen0.session.GimbalSource
 import ai.argvid.gen0.session.PermissionCoordinator
 import ai.argvid.gen0.session.SessionRoute
 import ai.argvid.gen0.session.SessionViewModel
+import ai.argvid.gen0.domain.gimbal.CommandResult
 import ai.argvid.gen0.media.catalog.ContentResolverAssetVerifier
 import ai.argvid.gen0.media.catalog.MediaStoreChangeObserver
 import ai.argvid.gen0.media.catalog.RoomTodayMomentStore
@@ -22,6 +26,7 @@ import ai.argvid.gen0.today.RepositoryTodaySource
 import ai.argvid.gen0.today.TodayScreen
 import ai.argvid.gen0.today.TodayViewModel
 import android.Manifest
+import android.os.Build
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import android.provider.MediaStore
@@ -101,11 +106,57 @@ fun Gen0App() {
                     gimbal = DomainSessionGimbal(runtime.gimbal),
                     permissionCoordinator = PermissionCoordinator(),
                     clock = ai.argvid.gen0.domain.time.MonotonicClock { System.nanoTime() / 1_000 },
+                    discovery = ai.argvid.gen0.session.GimbalDiscovery {
+                        runtime.bleTransport.scan().map { it.name }
+                    },
+                    detection = FaceDetectionSourceAdapter(runtime.faceDetection),
+                    trackingDriver = object : ai.argvid.gen0.session.GimbalTrackingDriver {
+                        override suspend fun nudge(panDeltaDeg: Double, tiltDeltaDeg: Double): Boolean =
+                            runCatching {
+                                val result = runtime.bleGimbal.nudge(panDeltaDeg, tiltDeltaDeg)
+                                if (result !is CommandResult.Accepted) {
+                                    android.util.Log.w("SESSION_TRACK", "controller rejected nudge: $result")
+                                }
+                                result is CommandResult.Accepted
+                            }.getOrDefault(false)
+
+                        override suspend fun stop(): Boolean =
+                            runCatching {
+                                runtime.bleGimbal.hold() is CommandResult.Accepted
+                            }.getOrDefault(false)
+                    },
+                    trackingGimbal = DomainSessionGimbal(runtime.bleGimbal),
+                    realGimbalTeardown = object : ai.argvid.gen0.session.RealGimbalTeardown {
+                        override suspend fun hold(): Boolean =
+                            runCatching {
+                                runtime.bleGimbal.hold() is CommandResult.Accepted
+                            }.getOrDefault(false)
+
+                        override suspend fun disconnect(): Boolean =
+                            runCatching {
+                                runtime.bleGimbal.disconnect()
+                                true
+                            }.getOrDefault(false)
+                    },
                 )
             }
         }
     }
     val sessionViewModel: SessionViewModel = viewModel(factory = factory)
+    val sessionUiState by sessionViewModel.uiState.collectAsState()
+    val gimbalSource = sessionUiState.gimbal.source
+    val gimbalConsoleFactory = remember(runtime, gimbalSource) {
+        viewModelFactory {
+            initializer {
+                GimbalConsoleViewModel(
+                    controller = if (gimbalSource == GimbalSource.RealBle) runtime.bleGimbal else runtime.gimbal,
+                    isSimulator = gimbalSource != GimbalSource.RealBle,
+                )
+            }
+        }
+    }
+    val gimbalConsoleViewModel: GimbalConsoleViewModel =
+        viewModel(key = "gimbal-console-$gimbalSource", factory = gimbalConsoleFactory)
     val todayFactory = remember(todayRepository, todayPlayer, localDeletion) {
         viewModelFactory {
             initializer {
@@ -124,8 +175,10 @@ fun Gen0App() {
     var destination by remember { mutableStateOf(AppDestination.Session) }
     var pendingPermission by remember { mutableStateOf<AppPermission?>(null) }
     var cameraStartJob by remember { mutableStateOf<Job?>(null) }
-    val completeCameraRequest: (AppPermission, Boolean) -> Unit = { permission, granted ->
-        cameraStartJob = scope.launch {
+    val completePermissionRequest: (AppPermission, Boolean) -> Unit = { permission, granted ->
+        if (permission != AppPermission.Camera) {
+            sessionViewModel.onPermissionResult(permission, granted)
+        } else cameraStartJob = scope.launch {
             val ready = if (granted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
                 try {
                     runtime.startCamera(lifecycleOwner, preview.surfaceProvider)
@@ -143,7 +196,7 @@ fun Gen0App() {
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val permission = pendingPermission ?: return@rememberLauncherForActivityResult
         pendingPermission = null
-        completeCameraRequest(permission, permission.runtimePermissions().all {
+            completePermissionRequest(permission, permission.runtimePermissions().all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         })
     }
@@ -197,6 +250,17 @@ fun Gen0App() {
                         label = { Text("Session") },
                     )
                     NavigationBarItem(
+                        selected = destination == AppDestination.Gimbal,
+                        onClick = {
+                            cameraStartJob?.cancel()
+                            pendingPermission = null
+                            sessionViewModel.onAppStopped()
+                            destination = AppDestination.Gimbal
+                        },
+                        icon = { Text("▲") },
+                        label = { Text("Gimbal") },
+                    )
+                    NavigationBarItem(
                         selected = destination == AppDestination.Today,
                         onClick = {
                             cameraStartJob?.cancel()
@@ -218,7 +282,7 @@ fun Gen0App() {
                     onPermissionRequest = { permission ->
                         val requested = permission.runtimePermissions()
                         if (requested.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) {
-                            completeCameraRequest(permission, true)
+                            completePermissionRequest(permission, true)
                         } else {
                             pendingPermission = permission
                             permissionLauncher.launch(requested)
@@ -230,6 +294,10 @@ fun Gen0App() {
                             modifier = Modifier.fillMaxSize(),
                         )
                     },
+                )
+                AppDestination.Gimbal -> GimbalConsoleRoute(
+                    viewModel = gimbalConsoleViewModel,
+                    modifier = Modifier.padding(innerPadding),
                 )
                 AppDestination.Today -> TodayScreen(
                     state = todayState,
@@ -254,9 +322,36 @@ fun Gen0App() {
 
 private enum class AppDestination {
     Session,
+    Gimbal,
     Today,
+}
+
+/** Bridges the capture-module pipeline into the session feature's detection port. */
+private class FaceDetectionSourceAdapter(
+    private val pipeline: ai.argvid.gen0.capture.FaceDetectionPipeline,
+) : ai.argvid.gen0.session.FaceDetectionSource {
+    override val observations: kotlinx.coroutines.flow.Flow<ai.argvid.gen0.domain.detection.SubjectObservation>
+        get() = pipeline.observations
+
+    override fun start(minConfidence: Float, minWidthRatio: Float) {
+        pipeline.updateThresholds(minConfidence, minWidthRatio)
+        pipeline.start()
+    }
+
+    override fun updateThresholds(minConfidence: Float, minWidthRatio: Float) {
+        pipeline.updateThresholds(minConfidence, minWidthRatio)
+    }
+
+    override fun stop() {
+        pipeline.stop()
+    }
 }
 
 private fun AppPermission.runtimePermissions(): Array<String> = when (this) {
     AppPermission.Camera -> arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+    AppPermission.Bluetooth -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
 }

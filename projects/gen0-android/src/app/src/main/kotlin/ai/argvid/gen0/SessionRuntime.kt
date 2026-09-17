@@ -16,6 +16,9 @@ import ai.argvid.gen0.domain.moment.MomentCoordinator
 import ai.argvid.gen0.domain.time.MonotonicClock
 import ai.argvid.gen0.gimbal.ManualGimbalScheduler
 import ai.argvid.gen0.gimbal.SimulatedGimbalLink
+import ai.argvid.gen0.gimbal.AndroidF32cBleTransport
+import ai.argvid.gen0.gimbal.F32cBleTransport
+import ai.argvid.gen0.gimbal.F32cBleGimbalLink
 import ai.argvid.gen0.media.codec.AndroidProxyMovieEncoder
 import ai.argvid.gen0.media.catalog.RoomMomentCatalog
 import ai.argvid.gen0.media.store.ContentResolverMediaStoreClient
@@ -59,6 +62,21 @@ class SessionRuntime(
         processor = DefaultFrameProcessor(configuration),
     )
     private val gimbalScheduler = ManualGimbalScheduler()
+    val bleTransport: F32cBleTransport = AndroidF32cBleTransport(appContext)
+
+    /** Explicit opt-in real-gimbal controller; the simulator stays the default. */
+    val bleGimbal = GimbalController(
+        F32cBleGimbalLink(bleTransport, scope, clock),
+    )
+
+    /** Reviewed on-device face detection over the existing proxy frame stream. */
+    val faceDetection = ai.argvid.gen0.capture.FaceDetectionPipeline(
+        context = appContext,
+        frames = sampler.frames,
+        scope = scope,
+        clock = ai.argvid.gen0.domain.time.WallClock { Instant.now() },
+        inferenceDispatcher = kotlinx.coroutines.Dispatchers.Default,
+    )
     val gimbal = GimbalController(
         SimulatedGimbalLink(
             clock = gimbalScheduler,
@@ -70,7 +88,14 @@ class SessionRuntime(
         sampler = AudioVideoSampler(sampler, microphone),
         buffer = audioVideoBuffer,
         preview = CapturePreviewPort { },
-        gimbal = CaptureGimbalPort { scope.launch { gimbal.hold() } },
+        gimbal = CaptureGimbalPort {
+            scope.launch {
+                gimbal.hold()
+                // The real BLE gimbal is a separate controller; a capture stop must
+                // hold it too, not only the simulator.
+                runCatching { bleGimbal.hold() }
+            }
+        },
         clock = clock,
         scope = scope,
         initialState = ai.argvid.gen0.domain.session.SessionState.Idle,
@@ -126,6 +151,8 @@ class SessionRuntime(
     }
 
     suspend fun close() {
+        bleTransport.disconnect()
+        (bleTransport as? AndroidF32cBleTransport)?.close()
         moments.onStop()
         capture.stop(StopReason.SessionEnded)
     }

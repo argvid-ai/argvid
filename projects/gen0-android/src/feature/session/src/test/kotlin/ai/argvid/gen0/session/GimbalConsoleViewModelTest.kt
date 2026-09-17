@@ -65,7 +65,7 @@ class GimbalConsoleViewModelTest {
         runCurrent()
 
         val message = viewModel.uiState.value.message.orEmpty()
-        assertTrue(message.contains("not ready", ignoreCase = true))
+        assertTrue(message.contains("未就绪"))
         assertFalse(message.contains("GATT", ignoreCase = true))
         assertFalse(message.contains("133"))
     }
@@ -82,6 +82,7 @@ class GimbalConsoleViewModelTest {
 
         override suspend fun connect(id: GimbalDeviceId): GimbalCapability {
             connection.value = GimbalConnectionState.Ready
+            telemetry.value = GimbalTelemetry(measuredAtMs = System.nanoTime() / 1_000_000)
             return GimbalCapability.gen05Simulator()
         }
 
@@ -95,6 +96,8 @@ class GimbalConsoleViewModelTest {
             return CommandReceipt(setpoint.seq, 0)
         }
 
+        override suspend fun setSpeed(rpm: Int) = CommandReceipt(1u.toUShort(), 0)
+        override suspend fun setVelocity(panRpm: Double, tiltRpm: Double) = CommandReceipt(1u.toUShort(), 0)
         override suspend fun setMode(mode: GimbalMode) = CommandReceipt(1u.toUShort(), 0)
         override suspend fun emergencyStop(reason: EStopReason) = CommandReceipt(1u.toUShort(), 0)
 

@@ -69,10 +69,36 @@ class GimbalControllerTest {
         assertEquals(1, link.emergencyStopCount)
     }
 
+    @Test
+    fun nudgeIsRejectedWhenTelemetryWasNeverMeasured() = runTest {
+        val link = RecordingGimbalLink(capability = fullCapability, stampTelemetry = false)
+        val controller = GimbalController(link)
+        controller.connect(GimbalDeviceId("test"))
+
+        val result = controller.nudge(panDeltaDeg = 5.0, tiltDeltaDeg = 0.0)
+
+        assertEquals(CommandResult.Rejected(CommandFailure.TelemetryStale), result)
+        assertTrue(link.sentSetpoints.isEmpty())
+    }
+
+    @Test
+    fun nudgeIsRejectedWhenMeasuredTelemetryIsStale() = runTest {
+        val link = RecordingGimbalLink(capability = fullCapability, telemetryAgeMs = 60_000L)
+        val controller = GimbalController(link)
+        controller.connect(GimbalDeviceId("test"))
+
+        val result = controller.nudge(panDeltaDeg = 5.0, tiltDeltaDeg = 0.0)
+
+        assertEquals(CommandResult.Rejected(CommandFailure.TelemetryStale), result)
+        assertTrue(link.sentSetpoints.isEmpty())
+    }
+
     private class RecordingGimbalLink(
         private val capability: GimbalCapability,
         private val ackOffset: Int = 0,
         private val neverAcknowledge: Boolean = false,
+        private val stampTelemetry: Boolean = true,
+        private val telemetryAgeMs: Long = 0L,
     ) : GimbalLink {
         override val connection = MutableStateFlow(GimbalConnectionState.Disconnected)
         override val motion = MutableStateFlow(GimbalMotionState.Idle)
@@ -85,6 +111,11 @@ class GimbalControllerTest {
 
         override suspend fun connect(id: GimbalDeviceId): GimbalCapability {
             connection.value = GimbalConnectionState.Ready
+            telemetry.value = if (stampTelemetry) {
+                GimbalTelemetry(measuredAtMs = System.nanoTime() / 1_000_000 - telemetryAgeMs)
+            } else {
+                GimbalTelemetry()
+            }
             return capability
         }
 
@@ -96,6 +127,8 @@ class GimbalControllerTest {
         }
 
         override suspend fun setMode(mode: GimbalMode) = CommandReceipt(1u.toUShort(), 0)
+        override suspend fun setSpeed(rpm: Int) = CommandReceipt(1u.toUShort(), 0)
+        override suspend fun setVelocity(panRpm: Double, tiltRpm: Double) = CommandReceipt(1u.toUShort(), 0)
         override suspend fun emergencyStop(reason: EStopReason): CommandReceipt {
             emergencyStopCount++
             return CommandReceipt(1u.toUShort(), 0)

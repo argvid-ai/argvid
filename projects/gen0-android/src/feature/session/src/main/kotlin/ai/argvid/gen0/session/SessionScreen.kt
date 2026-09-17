@@ -24,6 +24,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -115,14 +116,6 @@ fun SessionScreen(
                 Text("主体检测", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 StatusLine("检测状态", state.subjectDetection.statusText())
                 StatusLine("规则建议", state.subjectDetection.decisionText())
-                StatusLine("人体灵敏度", state.subjectDetection.personSensitivity.progress.toString())
-                Slider(
-                    value = state.subjectDetection.personSensitivity.progress.toFloat(),
-                    onValueChange = { onPersonSensitivityChanged(it.roundToInt()) },
-                    valueRange = 0f..DETECTION_SENSITIVITY_MAX_PROGRESS,
-                    steps = DETECTION_SENSITIVITY_STEPS,
-                    modifier = Modifier.semantics { contentDescription = "人体检测灵敏度" },
-                )
                 StatusLine("人脸灵敏度", state.subjectDetection.faceSensitivity.progress.toString())
                 Slider(
                     value = state.subjectDetection.faceSensitivity.progress.toFloat(),
@@ -136,7 +129,7 @@ fun SessionScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("云台语义模拟 · 非物理设备", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("云台 · ${state.gimbal.source.displayName()}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 StatusLine("连接", state.gimbal.connection.displayName())
                 StatusLine("运动", state.gimbal.motion.displayName())
                 StatusLine("温度", "%.1f°C".format(state.gimbal.temperatureC))
@@ -207,7 +200,97 @@ fun SessionScreen(
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = { onAction(SessionAction.ConnectGimbal) }, modifier = Modifier.weight(1f)) {
-                Text("云台模拟说明")
+                Text("模拟器（默认）")
+            }
+            OutlinedButton(
+                onClick = { onAction(SessionAction.SelectGimbalSource(GimbalSource.RealBle)) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("真实云台（BLE）")
+            }
+        }
+        if (state.gimbal.source == GimbalSource.RealBle) {
+            OutlinedButton(
+                onClick = { onAction(SessionAction.ScanRealGimbal) },
+                enabled = !state.gimbalDiscovery.scanning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.gimbalDiscovery.scanning) "正在扫描 F32C-Gimbal…" else "扫描真实云台（只读）")
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text("主体跟随", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "检测驱动云台小幅修正；录像不受影响",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.subjectDetection.trackingEnabled,
+                    onCheckedChange = { onAction(SessionAction.SetTrackingEnabled(it)) },
+                )
+            }
+            if (state.subjectDetection.trackingEnabled) {
+                Text(
+                    "跟踪力度 ${"%.1f".format(state.subjectDetection.trackingGain)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = state.subjectDetection.trackingGain.toFloat(),
+                    onValueChange = { onAction(SessionAction.SetTrackingGain(it.toDouble())) },
+                    valueRange = 0.4f..1.4f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("方向修正", style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = state.subjectDetection.invertPan,
+                            onCheckedChange = {
+                                onAction(
+                                    SessionAction.SetTrackingAxisInversion(
+                                        invertPan = it,
+                                        invertTilt = state.subjectDetection.invertTilt,
+                                    ),
+                                )
+                            },
+                            modifier = Modifier.height(24.dp),
+                        )
+                        Text("水平反转", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = state.subjectDetection.invertTilt,
+                            onCheckedChange = {
+                                onAction(
+                                    SessionAction.SetTrackingAxisInversion(
+                                        invertPan = state.subjectDetection.invertPan,
+                                        invertTilt = it,
+                                    ),
+                                )
+                            },
+                            modifier = Modifier.height(24.dp),
+                        )
+                        Text("俯仰反转", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            state.gimbalDiscovery.error?.let { error ->
+                Text("扫描失败：$error", color = MaterialTheme.colorScheme.error)
+            }
+            if (!state.gimbalDiscovery.scanning && state.gimbalDiscovery.candidates.isNotEmpty()) {
+                Text("发现 ${state.gimbalDiscovery.candidates.size} 个候选设备；尚未连接", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         state.gimbalNotice?.let { notice ->
@@ -264,6 +347,12 @@ private fun GimbalMotionState.displayName(): String = when (this) {
 
 private fun AppPermission.displayName(): String = when (this) {
     AppPermission.Camera -> "相机"
+    AppPermission.Bluetooth -> "蓝牙"
+}
+
+private fun GimbalSource.displayName(): String = when (this) {
+    GimbalSource.Simulator -> "模拟器（默认）"
+    GimbalSource.RealBle -> "真实云台（BLE）"
 }
 
 private fun SubjectDetectionUiState.statusText(): String = when {
