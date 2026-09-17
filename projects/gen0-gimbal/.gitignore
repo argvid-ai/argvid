@@ -1,0 +1,26 @@
+# Build artifacts
+.dart_tool/
+build/
+*.iml
+.idea/
+local.properties
+.gradle/
+**/Flutter/ephemeral/
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh
+**/Flutter/flutter_native_integration.env
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs and local output (never commit)
+*.log
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
