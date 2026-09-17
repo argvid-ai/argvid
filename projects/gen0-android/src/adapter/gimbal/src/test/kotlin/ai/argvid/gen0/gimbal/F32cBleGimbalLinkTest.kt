@@ -114,6 +114,8 @@ class F32cBleGimbalLinkTest {
         backgroundScope.launch { link.events.collect { if (it is GimbalEvent.EmergencyStopped) stopped = it } }
         runCurrent()
         link.emergencyStop(EStopReason.UserRequested)
+        testScheduler.advanceTimeBy(100)
+        runCurrent()
         assertEquals(2, transport.commands.count { it.contains("\"jog\"") && it.contains("\"dir\":0") })
         assertEquals(GimbalMotionState.Fault, link.motion.value)
         assertTrue(link.telemetry.value.fault.orEmpty().startsWith("Emergency stop"))
@@ -250,6 +252,8 @@ class F32cBleGimbalLinkTest {
     fun emergencyStopLatchesCommandsUntilAFreshConnect() = runTest {
         val link = connectedLink()
         link.emergencyStop(EStopReason.UserRequested)
+        testScheduler.advanceTimeBy(100)
+        runCurrent()
         assertEquals(GimbalMotionState.Fault, link.motion.value)
         assertRejects(GimbalCommandError.NotReady) { link.send(SemanticSetpoint(seq = 1u, panDeg = 5.0, tiltDeg = 0.0)) }
         assertRejects(GimbalCommandError.NotReady) { link.setMode(GimbalMode.Hold) }
@@ -326,6 +330,8 @@ class F32cBleGimbalLinkTest {
         val link = connectedLink()
         transport.failWriteFor("""{"cmd":"jog","axis":"pan","dir":0}""")
         link.emergencyStop(EStopReason.UserRequested)
+        testScheduler.advanceTimeBy(100)
+        runCurrent()
         val jogs = transport.commands.filter { it.contains("jog") && it.contains("dir\":0") }
         assertTrue("tilt stop must still be attempted", jogs.any { it.contains("tilt") })
         assertTrue(

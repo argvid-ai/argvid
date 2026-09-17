@@ -26,7 +26,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -283,19 +287,33 @@ class F32cBleGimbalLink(
         // Unblock a send that is mid cmd_result wait so it cannot override Fault.
         pendingCommandResult?.complete(true to "superseded by emergency stop")
 
-        // A1 fix: the caller's 400ms budget fires a coroutine cancellation that
-        // would abort the dual-axis stop and disconnect fallback midway. Catching
-        // it here lets the current call stack finish the remaining stop attempts
-        // (each write is a short single GATT operation). The CancellationException
-        // from the caller is not rethrown — this function must complete the stop.
-        val result = try {
-            executeStopSequence(state)
-        } catch (stopError: kotlinx.coroutines.CancellationException) {
-            // Caller timeout: continue — the latch is already set, and any
-            // remaining writes should still be attempted below.
-            "急停在调用方超时中止，部分停止写入可能未完成"
+        // A1: domain controller cancels this call at ~400ms. Run the physical stop
+        // sequence in a bounded NonCancellable context so cancellation cannot skip
+        // the second axis or the disconnect fallback. After the block finishes, a
+        // pending cancellation is rethrown — callers may still see TimedOut while
+        // fault/telemetry already reflect the stop outcome.
+        val deliveryFailure = withContext(NonCancellable) {
+            try {
+                withTimeout(ESTOP_STOP_BUDGET_MS) {
+                    executeStopSequence(state)
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                val base = "停止序列超过 ${ESTOP_STOP_BUDGET_MS}ms 预算，双轴停止可能未完成"
+                try {
+                    transport.disconnect()
+                    mutableConnection.value = GimbalConnectionState.Disconnected
+                    "$base；已断连兜底"
+                } catch (error: Throwable) {
+                    "$base；断连兜底也失败：${error.message ?: "unknown"}"
+                }
+            }
         }
-        val faultText = result ?: "Emergency stop（停止命令已发送，到位未确认）"
+
+        val faultText = if (deliveryFailure.isNullOrEmpty()) {
+            "Emergency stop（停止命令已发送，到位未确认）"
+        } else {
+            "Emergency stop（$deliveryFailure）"
+        }
         mutableTelemetry.value = mutableTelemetry.value.copy(fault = faultText)
         setMotion(GimbalMotionState.Fault)
         eventBus.tryEmit(GimbalEvent.EmergencyStopped(reason))
@@ -411,19 +429,21 @@ class F32cBleGimbalLink(
     }
 
     /**
-     * Executes the full stop sequence: Connecting → abort handshake; Ready →
+     * Executes the full stop sequence: Connecting -> abort handshake; Ready ->
      * per-axis best-effort stops, then disconnect fallback on failure.
      * Returns null on full success, or a fault description string.
-     * Must be called inside a NonCancellable scope with its own timeout.
+     * Called from emergencyStop inside NonCancellable + ESTOP_STOP_BUDGET_MS.
      */
     private suspend fun executeStopSequence(state: GimbalConnectionState): String? {
         var deliveryFailure: String? = null
         if (state == GimbalConnectionState.Connecting) {
             try {
-                transport.disconnect()
+                withTimeout(ESTOP_AXIS_BUDGET_MS) { transport.disconnect() }
+                mutableConnection.value = GimbalConnectionState.Disconnected
+            } catch (error: TimeoutCancellationException) {
+                deliveryFailure = "连接中止超时"
             } catch (error: Throwable) {
-                if (error is kotlinx.coroutines.CancellationException) throw error
-                deliveryFailure = "Emergency stop（连接中止失败：${error.message}）"
+                deliveryFailure = "连接中止失败：${error.message}"
             }
             return deliveryFailure
         }
@@ -432,23 +452,28 @@ class F32cBleGimbalLink(
         val failures = listOfNotNull(panStop, tiltStop)
         if (failures.isNotEmpty()) {
             deliveryFailure = "停止写入未送达：${failures.joinToString("、")}"
-            // Controlled disconnect fallback: the firmware fail-stops both
-            // axes (0 RPM, torque held) when the BLE link drops.
-            val disconnectResult = runCatching { transport.disconnect() }
-            if (disconnectResult.isFailure) {
-                deliveryFailure += "；断连兜底也失败：${disconnectResult.exceptionOrNull()?.message ?: "unknown"}"
+            try {
+                withTimeout(ESTOP_AXIS_BUDGET_MS) { transport.disconnect() }
+                mutableConnection.value = GimbalConnectionState.Disconnected
+                deliveryFailure += "；已断连兜底"
+            } catch (error: Throwable) {
+                deliveryFailure += "；断连兜底也失败：${error.message ?: "unknown"}"
+                // Do not claim Disconnected when the transport call failed.
             }
-            mutableConnection.value = GimbalConnectionState.Disconnected
         }
-        return deliveryFailure?.let { "Emergency stop（$it，已断连兜底）" }
+        return deliveryFailure
     }
 
     /** One axis stop write; returns null on success or a failure description. */
     private suspend fun stopAxisBestEffort(axisName: String): String? = try {
-        transport.writeCommand("""{"cmd":"jog","axis":"$axisName","dir":0}""")
+        withTimeout(ESTOP_AXIS_BUDGET_MS) {
+            transport.writeCommand("""{"cmd":"jog","axis":"$axisName","dir":0}""")
+        }
         null
+    } catch (error: TimeoutCancellationException) {
+        "$axisName: timeout"
     } catch (error: Throwable) {
-        if (error is kotlinx.coroutines.CancellationException) throw error
+        // Best-effort stop must not rethrow: peer axis + disconnect still need to run.
         "$axisName: ${error.message ?: "write failed"}"
     }
 
@@ -634,9 +659,12 @@ class F32cBleGimbalLink(
         const val SPEED_EPSILON_RPM = 0.01
         /** Bounded budget for the non-cancellable stop sequence inside e-stop. */
         const val ESTOP_STOP_BUDGET_MS = 2_000L
+        /** Per-axis GATT stop write budget inside the e-stop sequence. */
+        const val ESTOP_AXIS_BUDGET_MS = 900L
         const val QUERY_FAILURE_PREFIX = "查询失败"
         const val MAX_SPEED_RPM = 300
         const val VELOCITY_WATCHDOG_MS = 800L
         const val VELOCITY_WATCHDOG_INTERVAL_MS = 200L
     }
 }
+
