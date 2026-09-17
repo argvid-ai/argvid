@@ -7,6 +7,12 @@
 
 CmdHandler cmdHandler;
 
+// F2: BLE-task stop/disconnect must abort a main-task move blocked in UART query.
+static GimbalController* s_motionAbortGimbal = nullptr;
+static void motionAbortHook() {
+    if (s_motionAbortGimbal) s_motionAbortGimbal->abortMotion();
+}
+
 void CmdHandler::begin(F32CMotor* motor, GimbalController* gimbal,
                        WifiManager* wifi, BleServiceManager* ble) {
     _motor = motor;
@@ -14,6 +20,21 @@ void CmdHandler::begin(F32CMotor* motor, GimbalController* gimbal,
     _wifi = wifi;
     _ble = ble;
     _prefsReady = _prefs.begin("gimbal_params", false);
+    s_motionAbortGimbal = gimbal;
+    if (_ble) _ble->setMotionAbortHook(motionAbortHook);
+}
+
+// F2-new: classify by JSON "cmd" field (not arbitrary substring match).
+static bool jsonIsMotionCommand(const char* json) {
+    StaticJsonDocument<192> doc;
+    if (deserializeJson(doc, json)) return false;
+    const char* cmd = doc["cmd"] | "";
+    return strcmp(cmd, "move") == 0 ||
+           strcmp(cmd, "center") == 0 ||
+           strcmp(cmd, "jog") == 0 ||
+           strcmp(cmd, "set_angle") == 0 ||
+           strcmp(cmd, "set_multi_angle") == 0 ||
+           strcmp(cmd, "set_single_angle") == 0;
 }
 
 String CmdHandler::_paramKey(uint8_t addr, const char* suffix) {
@@ -82,6 +103,7 @@ void CmdHandler::processQueue() {
     // P1-2：停止旁路优先于队列消费（队列满时停止也不丢）
     bool stopPan, stopTilt;
     if (_ble->takeStopRequest(stopPan, stopTilt)) {
+        _gimbal->abortMotion();
         if (stopPan)  _gimbal->jog("pan", 0, 0);
         if (stopTilt) _gimbal->jog("tilt", 0, 0);
         flushLogs();
@@ -109,6 +131,7 @@ void CmdHandler::processQueue() {
         // setMode/enable/speed/target after the stop was consumed once at the
         // top of processQueue.
         if (_ble->takeDisconnectEvent()) {
+            _gimbal->abortMotion();  // F2: abort any in-flight motion transaction
             _handleDisconnect();
             // Connection is gone; drain and exit.
             BleCmdMsg drop;
@@ -117,23 +140,27 @@ void CmdHandler::processQueue() {
         }
         bool sPan, sTilt;
         if (_ble->takeStopRequest(sPan, sTilt)) {
+            _gimbal->abortMotion();  // F2: abort any in-flight motion transaction
             if (sPan)  _gimbal->jog("pan", 0, 0);
             if (sTilt) _gimbal->jog("tilt", 0, 0);
             flushLogs();
             // F2-new: drop only queued MOTION commands so old targets do not
-            // execute after the stop. Parameter commands (PID, speed config,
-            // scan, query) queued after the stop are preserved and processed
-            // directly — blanket-draining them would silently eat new config.
+            // execute after the stop. Both the already-popped msg and any
+            // remaining queue entries are classified — parameter commands
+            // (PID, speed config, scan, query) are preserved and processed
+            // directly instead of being silently eaten.
             {
                 BleCmdMsg peek;
                 std::vector<BleCmdMsg> preserved;
+                // F2-new: classify the already-popped msg too — it could be a
+                // new parameter that arrived after the stop callback cleared
+                // the old queue.
+                {
+                    if (!msg.isWifi && !jsonIsMotionCommand(msg.json)) preserved.push_back(msg);
+                }
                 while (_ble->popCommand(peek)) {
                     if (peek.isWifi) continue;  // wifi handled separately, safe to drop
-                    String body(peek.json);
-                    bool isMotion = body.indexOf("move") >= 0 || body.indexOf("center") >= 0 ||
-                                    body.indexOf("jog") >= 0 || body.indexOf("set_angle") >= 0 ||
-                                    body.indexOf("set_multi_angle") >= 0;
-                    if (!isMotion) preserved.push_back(peek);
+                    if (!jsonIsMotionCommand(peek.json)) preserved.push_back(peek);
                     // Motion commands are silently dropped.
                 }
                 // Process preserved (non-motion) commands directly instead of
@@ -151,6 +178,7 @@ void CmdHandler::processQueue() {
             while (_ble->popCommand(drop)) {}
             return;
         }
+        _gimbal->clearMotionAbort();  // F2: new command clears the abort flag
         if (msg.isWifi) {
             _handleWifiCmd(String(msg.json));
         } else {
@@ -257,6 +285,7 @@ void CmdHandler::_handleMotorCmd(const String& json) {
                 return;
             }
             if (_ble->takeStopRequest(rPan, rTilt)) {
+                _gimbal->abortMotion();
                 if (rPan)  _gimbal->jog("pan", 0, 0);
                 if (rTilt) _gimbal->jog("tilt", 0, 0);
                 _notifyResult(false, "运动命令在位置安全查询后被停止抢占，已转停止");
@@ -286,6 +315,7 @@ void CmdHandler::_handleMotorCmd(const String& json) {
                 return;
             }
             if (_ble->takeStopRequest(rPan, rTilt)) {
+                _gimbal->abortMotion();
                 if (rPan)  _gimbal->jog("pan", 0, 0);
                 if (rTilt) _gimbal->jog("tilt", 0, 0);
                 _notifyResult(false, "回中命令在安全查询后被停止抢占，已转停止");
@@ -579,3 +609,4 @@ void CmdHandler::pushSystemStatus() {
     serializeJson(doc, out);
     _ble->notifyStatus(out);
 }
+

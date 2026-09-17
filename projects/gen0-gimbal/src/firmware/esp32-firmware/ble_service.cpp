@@ -166,8 +166,14 @@ void BleServiceManager::setConnected(bool connected) {
         if (s_cmdQueue) xQueueReset(s_cmdQueue);
         _stopFlags.store(0);
         _disconnectPending.store(true);
+        _fireMotionAbort();  // F2: abort in-flight move blocked in positionSafety
     }
     if (_connectCb) _connectCb(connected);
+}
+
+void BleServiceManager::_fireMotionAbort() {
+    // BLE task / connect callback: non-blocking flag only.
+    if (_motionAbortHook) _motionAbortHook();
 }
 
 bool BleServiceManager::takeDisconnectEvent() {
@@ -182,6 +188,7 @@ void BleServiceManager::requestStop(bool pan, bool tilt) {
     if (s_cmdQueue) xQueueReset(s_cmdQueue);
     if (pan)  _stopFlags.fetch_or(0x01);
     if (tilt) _stopFlags.fetch_or(0x02);
+    _fireMotionAbort();  // F2: abort in-flight move blocked in positionSafety
 }
 
 bool BleServiceManager::takeStopRequest(bool& pan, bool& tilt) {
@@ -245,3 +252,4 @@ void BleServiceManager::_notifyJson(BLECharacteristic* characteristic, const Str
         delay(10);
     }
 }
+

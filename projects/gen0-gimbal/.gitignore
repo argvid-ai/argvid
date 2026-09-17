@@ -24,3 +24,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Host regression binary (platform-specific)
+tests/firmware_host/firmware_host_regression
+tests/firmware_host/firmware_host_regression.exe
+

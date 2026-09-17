@@ -33,6 +33,13 @@ public:
     // Query before restoring gains or issuing motion; failure requests a stop.
     MotorResponse positionSafety(bool hasPan, bool hasTilt, float* panDegrees = nullptr);
 
+    // F2: BLE stop/disconnect and cmd_handler set this while a motion command
+    // is mid-execution. move()/center() re-check after blocking positionSafety
+    // and between axis writes so nested queries cannot resume motion.
+    void abortMotion() { _motionAborted = true; }
+    void clearMotionAbort() { _motionAborted = false; }
+    bool isMotionAborted() const { return _motionAborted; }
+
     // 双轴回中 0°
     MotorResponse center(int16_t position_speed = -1);
 
@@ -66,6 +73,7 @@ public:
     String stateJson();
 
 private:
+    volatile bool _motionAborted = false;
     F32CMotor* _motor = nullptr;
     uint8_t _panAddr = 0;
     uint8_t _tiltAddr = 0;
@@ -85,3 +93,4 @@ private:
     MotorResponse _axisSetSingleAngle(bool isPan, float degree);
     MotorResponse _axisSetSingleZero(bool isPan);
 };
+

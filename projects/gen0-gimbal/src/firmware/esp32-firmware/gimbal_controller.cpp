@@ -119,6 +119,14 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     float currentPan = 0.0f;
     MotorResponse safe = positionSafety(hasPan, hasTilt, &currentPan);
     if (!safe.valid) return safe;
+    // F2: positionSafety blocks on a UART query. Stop/disconnect on the BLE task
+    // sets _motionAborted via the abort hook so this check covers the second
+    // nested query inside move(), not only processQueue boundaries.
+    if (_motionAborted) {
+        r.valid = false;
+        r.parsed_text = "运动命令在安全查询后被停止/断连抢占，未执行";
+        return r;
+    }
     if (position_speed >= 0) {
         if (position_speed > 300) position_speed = 300;
         if (hasPan) _panSpeed = position_speed;
@@ -161,6 +169,12 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
         if (rp.valid) _panAngle = pan;
         r.valid = r.valid && rp.valid;
         r.parsed_text += "pan " + String(pan, 1) + "° " + (rp.valid ? "目标已发送（到位未确认）" : ("✗ " + rp.parsed_text)) + " ";
+    }
+    // F2: stop/disconnect may arrive between axis writes after the safety query.
+    if (_motionAborted) {
+        r.valid = false;
+        r.parsed_text += "运动在轴向写入间被停止/断连抢占";
+        return r;
     }
     if (hasTilt) {
         if (tilt > 90.0f)  tilt = 90.0f;
@@ -355,3 +369,4 @@ String GimbalController::stateJson() {
     s += "}";
     return s;
 }
+

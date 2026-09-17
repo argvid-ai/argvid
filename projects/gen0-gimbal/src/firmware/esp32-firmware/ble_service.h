@@ -26,6 +26,9 @@ struct BleCmdMsg {
 class BleServiceManager {
 public:
     typedef void (*ConnectCallback)(bool connected);
+    // F2: BLE-task stop/disconnect can abort a main-task motion blocked in
+    // positionSafety/move without waiting for processQueue to resume.
+    typedef void (*MotionAbortHook)();
 
     void begin(const char* deviceName);
     bool isConnected() const { return _connected; }
@@ -54,6 +57,7 @@ public:
     void _queueCmdPublic(bool isWifi, const String& json);
 
     void setConnectCallback(ConnectCallback cb) { _connectCb = cb; }
+    void setMotionAbortHook(MotionAbortHook hook) { _motionAbortHook = hook; }
 
 private:
     BLEServer*         _server = nullptr;
@@ -63,6 +67,7 @@ private:
     BLECharacteristic* _charResp = nullptr;
     bool _connected = false;
     ConnectCallback _connectCb = nullptr;
+    MotionAbortHook _motionAbortHook = nullptr;
     String _statusReadValue = "{}";
 
     std::atomic<bool>    _disconnectPending{false};  // P1-1 断连待处理标志
@@ -73,4 +78,5 @@ private:
 
     void _queueCmd(bool isWifi, const String& json);
     void _notifyJson(BLECharacteristic* characteristic, const String& json);
+    void _fireMotionAbort();
 };

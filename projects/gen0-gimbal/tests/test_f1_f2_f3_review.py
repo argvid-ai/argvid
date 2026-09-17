@@ -45,18 +45,21 @@ class F1FirmwareHonestStop(unittest.TestCase):
 
 
 class F2FirmwareQueuePreemption(unittest.TestCase):
-    """Verify the F2 fix is present: safety checks between every queued command."""
+    """Verify F2 abort wiring is present (behavioral coverage is in firmware_host)."""
 
     def test_process_queue_checks_safety_between_commands(self):
-        source = (Path(__file__).resolve().parents[1] /
-                   "src" / "firmware" / "esp32-firmware" / "cmd_handler.cpp").read_text(encoding="utf-8")
-        # The F2 fix adds safety preemption inside the while(popCommand) loop.
-        self.assertIn("F2: safety preemption between EVERY queued command", source,
-                      "F2: must have per-command safety checks in the queue loop")
-        # Verify stop consumed inside the loop drops remaining commands.
-        self.assertIn("drop", source.lower(),
-                      "F2: stop inside the loop must drop remaining queued commands")
+        root = Path(__file__).resolve().parents[1] / "src" / "firmware" / "esp32-firmware"
+        cmd = (root / "cmd_handler.cpp").read_text(encoding="utf-8")
+        ble = (root / "ble_service.cpp").read_text(encoding="utf-8")
+        ctl = (root / "gimbal_controller.cpp").read_text(encoding="utf-8")
+        self.assertIn("F2: safety preemption between EVERY queued command", cmd)
+        self.assertIn("setMotionAbortHook", cmd)
+        self.assertIn("jsonIsMotionCommand", cmd)
+        self.assertIn("_fireMotionAbort", ble)
+        self.assertIn("_motionAborted", ctl)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
