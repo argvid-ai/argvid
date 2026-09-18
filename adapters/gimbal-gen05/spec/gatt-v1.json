@@ -1,0 +1,103 @@
+{
+  "name": "gen05-gimbal-gatt-v1",
+  "status": "proposed",
+  "version": 1,
+  "layer": "adapter/gimbal-gen05",
+  "endianness": "little",
+  "max_payload_bytes": 20,
+  "uuids": {
+    "service": "8E400001-F315-4F60-9FB8-838830DAEA50",
+    "capability": "8E400002-F315-4F60-9FB8-838830DAEA50",
+    "setpoint": "8E400003-F315-4F60-9FB8-838830DAEA50",
+    "mode": "8E400004-F315-4F60-9FB8-838830DAEA50",
+    "state": "8E400005-F315-4F60-9FB8-838830DAEA50",
+    "estop": "8E400006-F315-4F60-9FB8-838830DAEA50"
+  },
+  "enums": {
+    "state": {
+      "0": "idle",
+      "1": "moving",
+      "2": "settling",
+      "3": "holding",
+      "4": "stalled",
+      "5": "fault"
+    },
+    "mode": {
+      "0": "manual",
+      "1": "hold",
+      "2": "home",
+      "3": "scan",
+      "4": "track"
+    }
+  },
+  "packets": {
+    "capability": {
+      "size_bytes": 20,
+      "fields": [
+        {"offset": 0, "name": "version", "type": "u8"},
+        {"offset": 1, "name": "axis_flags", "type": "u8"},
+        {"offset": 2, "name": "pan_min_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 4, "name": "pan_max_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 6, "name": "tilt_min_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 8, "name": "tilt_max_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 10, "name": "max_dps_cdeg", "type": "u16", "unit": "0.01 degree/second"},
+        {"offset": 12, "name": "state_hz", "type": "u8", "unit": "hertz"},
+        {"offset": 13, "name": "capability_flags", "type": "u8"},
+        {"offset": 14, "name": "watchdog_ms", "type": "u16", "unit": "millisecond"},
+        {"offset": 16, "name": "fw_major", "type": "u8"},
+        {"offset": 17, "name": "fw_minor", "type": "u8"},
+        {"offset": 18, "name": "fw_patch", "type": "u8"},
+        {"offset": 19, "name": "fw_build", "type": "u8"}
+      ]
+    },
+    "setpoint": {
+      "size_bytes": 16,
+      "fields": [
+        {"offset": 0, "name": "version", "type": "u8"},
+        {"offset": 1, "name": "flags", "type": "u8"},
+        {"offset": 2, "name": "seq", "type": "u16"},
+        {"offset": 4, "name": "pan_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 6, "name": "tilt_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 8, "name": "max_dps_cdeg", "type": "u16", "unit": "0.01 degree/second"},
+        {"offset": 10, "name": "deadline_ms", "type": "u16", "unit": "millisecond"},
+        {"offset": 12, "name": "session_nonce", "type": "u32"}
+      ]
+    },
+    "mode": {
+      "size_bytes": 8,
+      "fields": [
+        {"offset": 0, "name": "version", "type": "u8"},
+        {"offset": 1, "name": "mode", "type": "u8"},
+        {"offset": 2, "name": "seq", "type": "u16"},
+        {"offset": 4, "name": "session_nonce", "type": "u32"}
+      ]
+    },
+    "estop": {
+      "size_bytes": 8,
+      "fields": [
+        {"offset": 0, "name": "version", "type": "u8"},
+        {"offset": 1, "name": "reason", "type": "u8"},
+        {"offset": 2, "name": "seq", "type": "u16"},
+        {"offset": 4, "name": "session_nonce", "type": "u32"}
+      ]
+    },
+    "state": {
+      "size_bytes": 16,
+      "fields": [
+        {"offset": 0, "name": "version", "type": "u8"},
+        {"offset": 1, "name": "state", "type": "u8"},
+        {"offset": 2, "name": "ack_seq", "type": "u16"},
+        {"offset": 4, "name": "pan_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 6, "name": "tilt_cdeg", "type": "i16", "unit": "0.01 degree"},
+        {"offset": 8, "name": "fault_flags", "type": "u16"},
+        {"offset": 10, "name": "temp_decic", "type": "i16", "unit": "0.1 degree Celsius"},
+        {"offset": 12, "name": "uptime_ms", "type": "u32", "unit": "millisecond"}
+      ]
+    }
+  },
+  "safety": {
+    "watchdog_max_ms": 500,
+    "lost_contact_state": "holding",
+    "estop_latched": true
+  }
+}
