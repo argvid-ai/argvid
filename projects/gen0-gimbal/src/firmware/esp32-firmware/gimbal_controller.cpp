@@ -22,6 +22,25 @@ void GimbalController::invalidateAllModes() {
     _tiltMode = -1;
 }
 
+void GimbalController::abortMotion() {
+    // BLE callback / main task: generation bump is lock-free and cannot be
+    // undone by a concurrent clearMotionAbort that observed an older value.
+    _abortGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void GimbalController::clearMotionAbort() {
+    // Publish observation of the latest abort generation. If abortMotion runs
+    // between load and store, the new generation remains visible to checks.
+    const uint32_t latest = _abortGeneration.load(std::memory_order_acquire);
+    _observedGeneration.store(latest, std::memory_order_release);
+}
+
+bool GimbalController::isMotionAborted() const {
+    return _abortGeneration.load(std::memory_order_acquire) !=
+           _observedGeneration.load(std::memory_order_acquire);
+}
+
+
 void GimbalController::autoConfig(const MotorInfo* motors, size_t count) {
     if (count >= 2 && (_panAddr == 0 || _tiltAddr == 0)) {
         _panAddr = motors[0].addr;
@@ -120,9 +139,8 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     MotorResponse safe = positionSafety(hasPan, hasTilt, &currentPan);
     if (!safe.valid) return safe;
     // F2: positionSafety blocks on a UART query. Stop/disconnect on the BLE task
-    // sets _motionAborted via the abort hook so this check covers the second
-    // nested query inside move(), not only processQueue boundaries.
-    if (_motionAborted) {
+    // bumps the abort generation so this check covers the nested query inside move().
+    if (isMotionAborted()) {
         r.valid = false;
         r.parsed_text = "运动命令在安全查询后被停止/断连抢占，未执行";
         return r;
@@ -135,6 +153,14 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
     // Derive the nearest equivalent from this request's measured position.
     // No turn offset survives a motor-only reboot.
     const float panTarget = pan + roundf((currentPan - pan) / 360.0f) * 360.0f;
+
+    auto failIfAborted = [&](const char* where) -> bool {
+        if (!isMotionAborted()) return false;
+        r.valid = false;
+        if (r.parsed_text.length() > 0) r.parsed_text += " ";
+        r.parsed_text += String("运动在") + where + "被停止/断连抢占，未继续驱动";
+        return true;
+    };
 
     if (hasPan) {
         if (pan > 180.0f)  pan = 180.0f;
@@ -149,18 +175,21 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "pan 切位置模式失败: " + rm.parsed_text;
                 return r;
             }
+            if (failIfAborted("pan mode后")) return r;
             MotorResponse re = _axisEnable(true);
             if (!re.valid) {
                 r.valid = false;
                 r.parsed_text = "pan 使能失败: " + re.parsed_text;
                 return r;
             }
+            if (failIfAborted("pan enable后")) return r;
             MotorResponse rs = _axisSetSpeed(true, _panSpeed);
             if (!rs.valid) {
                 r.valid = false;
                 r.parsed_text = "pan 位置速度恢复失败: " + rs.parsed_text;
                 return r;
             }
+            if (failIfAborted("pan speed后")) return r;
             _panMode = 1;
         }
         // F32C 位置写入没有即时回包；这里仅报告目标帧已发送，
@@ -169,13 +198,10 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
         if (rp.valid) _panAngle = pan;
         r.valid = r.valid && rp.valid;
         r.parsed_text += "pan " + String(pan, 1) + "° " + (rp.valid ? "目标已发送（到位未确认）" : ("✗ " + rp.parsed_text)) + " ";
+        if (failIfAborted("pan target后")) return r;
     }
     // F2: stop/disconnect may arrive between axis writes after the safety query.
-    if (_motionAborted) {
-        r.valid = false;
-        r.parsed_text += "运动在轴向写入间被停止/断连抢占";
-        return r;
-    }
+    if (failIfAborted("两轴之间")) return r;
     if (hasTilt) {
         if (tilt > 90.0f)  tilt = 90.0f;
         if (tilt < -90.0f) tilt = -90.0f;
@@ -187,25 +213,31 @@ MotorResponse GimbalController::move(float pan, float tilt, bool hasPan, bool ha
                 r.parsed_text = "tilt 切位置模式失败: " + rm.parsed_text;
                 return r;
             }
+            if (failIfAborted("tilt mode后")) return r;
             MotorResponse re = _axisEnable(false);
             if (!re.valid) {
                 r.valid = false;
                 r.parsed_text = "tilt 使能失败: " + re.parsed_text;
                 return r;
             }
+            if (failIfAborted("tilt enable后")) return r;
             MotorResponse rs = _axisSetSpeed(false, _tiltSpeed);
             if (!rs.valid) {
                 r.valid = false;
                 r.parsed_text = "tilt 位置速度恢复失败: " + rs.parsed_text;
                 return r;
             }
+            if (failIfAborted("tilt speed后")) return r;
             _tiltMode = 1;
         }
         MotorResponse rt = _axisSetMultiAngle(false, tilt, false);
         if (rt.valid) _tiltAngle = tilt;
         r.valid = r.valid && rt.valid;
         r.parsed_text += "tilt " + String(tilt, 1) + "° " + (rt.valid ? "目标已发送（到位未确认）" : ("✗ " + rt.parsed_text));
+        if (failIfAborted("tilt target后")) return r;
     }
+    // Final success gate: a stop that raced the last write must not report success.
+    if (failIfAborted("返回前")) return r;
     if (r.parsed_text.length() == 0) r.parsed_text = "无参数";
     return r;
 }

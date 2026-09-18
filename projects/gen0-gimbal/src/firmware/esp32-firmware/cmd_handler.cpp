@@ -178,7 +178,7 @@ void CmdHandler::processQueue() {
             while (_ble->popCommand(drop)) {}
             return;
         }
-        _gimbal->clearMotionAbort();  // F2: new command clears the abort flag
+        _gimbal->clearMotionAbort();  // F2: observe abort generation for this new command (concurrent abort still wins)
         if (msg.isWifi) {
             _handleWifiCmd(String(msg.json));
         } else {

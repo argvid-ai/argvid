@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "gimbal_controller.h"
 
@@ -32,10 +33,16 @@ class FakeMotorSerial final : public HardwareSerial {
     rx.erase(rx.begin());
     return value;
   }
+  std::function<void(const Frame&)> onFrameWrite;
+  // Count of frames observed after the first abort-triggered hook for assertions.
+  std::size_t framesAtAbort = 0;
+  bool abortHookFired = false;
+
   std::size_t write(const uint8_t* data, std::size_t len) override {
     if (len < 5) return 0;
     Frame f{data[1], data[2], std::vector<uint8_t>(data + 3, data + len - 2)};
     frames.push_back(f);
+    if (onFrameWrite) onFrameWrite(f);
     if (f.func == F32CMotor::FC_QUERY && f.data.size() == 1 && f.data[0] == F32CMotor::RT_TOTAL_ANGLE) {
       if (!dropTotalResponse) {
         queueResponse(f.addr, wrongTotalType ? F32CMotor::RT_SPEED : f.data[0],
@@ -286,6 +293,7 @@ void testF1SetModeFailureStillAttemptsZeroSpeed() {
 }
 
 
+
 // F2: abortMotion after the blocking safety query must prevent mode/enable/
 // non-zero speed/target writes. This models stop/disconnect arriving during
 // the nested positionSafety inside move().
@@ -297,49 +305,167 @@ void testF2AbortAfterSafetyBlocksMotionWrites() {
   gimbal.begin(&motor);
   gimbal.config(1, 2);
 
-  // Prime a clean baseline so the abort case is not confounded by first-connect.
   require(gimbal.move(1.0f, 1.0f, true, true).valid, "F2 setup move accepted");
   serial.clearFrames();
   gimbal.clearMotionAbort();
 
-  // Abort is set as if BLE stop arrived during the upcoming safety query.
   gimbal.abortMotion();
   MotorResponse r = gimbal.move(10.0f, 5.0f, true, true);
   require(!r.valid, "F2: aborted move must report failure");
-  require(std::string(r.parsed_text.c_str()).find("抢占") != std::string::npos || std::string(r.parsed_text.c_str()).find("停止") != std::string::npos,
+  require(std::string(r.parsed_text.c_str()).find("抢占") != std::string::npos ||
+              std::string(r.parsed_text.c_str()).find("停止") != std::string::npos,
           "F2: failure text must mention preemption/stop");
 
-  // Queries for safety are allowed; motion-driving frames are not.
   for (const Frame& f : serial.frames) {
     if (f.func == F32CMotor::FC_QUERY) continue;
     require(false, "F2: aborted move must not emit mode/enable/speed/target");
   }
 }
 
-// F2 companion: abort between axes after pan writes have started.
-void testF2AbortBetweenAxesStopsTiltWrites() {
+static int16_t frameSpeed(const Frame& f) {
+  if (f.data.size() < 2) return 0x7fff;
+  return static_cast<int16_t>((uint16_t(f.data[0]) << 8) | f.data[1]);
+}
+
+static bool isMotionDriveFrame(const Frame& f) {
+  if (f.func == F32CMotor::FC_QUERY) return false;
+  if (f.func == F32CMotor::FC_SET_SPEED && frameSpeed(f) == 0) return false;  // stop zeros allowed elsewhere
+  return f.func == F32CMotor::FC_SET_MODE || f.func == F32CMotor::FC_ENABLE ||
+         f.func == F32CMotor::FC_SET_SPEED || f.func == F32CMotor::FC_SET_MULTI_ANGLE ||
+         f.func == F32CMotor::FC_SET_SINGLE_ANGLE;
+}
+
+// Production-boundary F2: abort is injected from the serial write hook at a
+// specific prepare/target frame, modeling BLE stop during FRAME_GAP yield.
+void testF2AbortAtFrameBlocksLaterMotion(
+    const char* name,
+    uint8_t triggerAddr,
+    uint8_t triggerFunc,
+    bool expectNoLaterEnable,
+    bool expectNoLaterNonZeroSpeed,
+    bool expectNoLaterTarget) {
   FakeMotorSerial serial;
   F32CMotor motor;
   motor.begin(&serial, 1);
   GimbalController gimbal;
   gimbal.begin(&motor);
   gimbal.config(1, 2);
-  require(gimbal.move(1.0f, 1.0f, true, true).valid, "F2 between-axes setup");
+
+  serial.onFrameWrite = nullptr;
+  require(gimbal.move(1.0f, 1.0f, true, true).valid, "F2 hook setup move");
   serial.clearFrames();
   gimbal.clearMotionAbort();
 
-  // Use a custom path: start move is hard to interleave without hooks, so
-  // verify the post-pan check by aborting before a tilt-only move after a
-  // pan-only move would have written — covered by abort-before-writes above.
-  // Directly assert tilt-only aborted move emits no tilt motion frames.
-  gimbal.abortMotion();
-  MotorResponse r = gimbal.move(0.0f, 8.0f, false, true);
-  require(!r.valid, "F2: aborted tilt-only move fails");
-  for (const Frame& f : serial.framesFor(2)) {
-    if (f.func == F32CMotor::FC_QUERY) continue;
-    require(false, "F2: aborted tilt-only move must not drive tilt");
+  serial.abortHookFired = false;
+  serial.framesAtAbort = 0;
+  serial.onFrameWrite = [&](const Frame& f) {
+    if (serial.abortHookFired) return;
+    if (f.addr == triggerAddr && f.func == triggerFunc) {
+      serial.abortHookFired = true;
+      serial.framesAtAbort = serial.frames.size();
+      gimbal.abortMotion();
+    }
+  };
+
+  MotorResponse r = gimbal.move(12.0f, 6.0f, true, true);
+  require(!r.valid, (std::string(name) + ": move must fail after mid-transaction abort").c_str());
+  require(serial.abortHookFired, (std::string(name) + ": abort hook must fire").c_str());
+
+  bool laterEnable = false, laterNonZeroSpeed = false, laterTarget = false;
+  for (std::size_t i = serial.framesAtAbort; i < serial.frames.size(); ++i) {
+    const Frame& f = serial.frames[i];
+    // The triggering frame itself is index framesAtAbort-1; start AFTER it.
+  }
+  for (std::size_t i = serial.framesAtAbort; i < serial.frames.size(); ++i) {
+    const Frame& f = serial.frames[i];
+    if (f.func == F32CMotor::FC_ENABLE) laterEnable = true;
+    if (f.func == F32CMotor::FC_SET_SPEED && frameSpeed(f) != 0) laterNonZeroSpeed = true;
+    if (f.func == F32CMotor::FC_SET_MULTI_ANGLE || f.func == F32CMotor::FC_SET_SINGLE_ANGLE) laterTarget = true;
+  }
+  // framesAtAbort is size AFTER push of trigger frame, so loop starts at next frame. Good.
+
+  if (expectNoLaterEnable) {
+    require(!laterEnable, (std::string(name) + ": no enable after abort").c_str());
+  }
+  if (expectNoLaterNonZeroSpeed) {
+    require(!laterNonZeroSpeed, (std::string(name) + ": no non-zero speed after abort").c_str());
+  }
+  if (expectNoLaterTarget) {
+    require(!laterTarget, (std::string(name) + ": no target after abort").c_str());
   }
 }
+
+void testF2IntraAxisAbortHooks() {
+  // pan mode -> no subsequent enable/speed/target for the transaction drive path
+  testF2AbortAtFrameBlocksLaterMotion("pan-mode", 1, F32CMotor::FC_SET_MODE, true, true, true);
+  testF2AbortAtFrameBlocksLaterMotion("pan-enable", 1, F32CMotor::FC_ENABLE, true, true, true);
+  // pan speed is non-zero prepare; abort after it must block target
+  testF2AbortAtFrameBlocksLaterMotion("pan-speed", 1, F32CMotor::FC_SET_SPEED, true, true, true);
+  testF2AbortAtFrameBlocksLaterMotion("pan-target", 1, F32CMotor::FC_SET_MULTI_ANGLE, true, true, true);
+
+  testF2AbortAtFrameBlocksLaterMotion("tilt-mode", 2, F32CMotor::FC_SET_MODE, true, true, true);
+  testF2AbortAtFrameBlocksLaterMotion("tilt-enable", 2, F32CMotor::FC_ENABLE, true, true, true);
+  testF2AbortAtFrameBlocksLaterMotion("tilt-speed", 2, F32CMotor::FC_SET_SPEED, true, true, true);
+  testF2AbortAtFrameBlocksLaterMotion("tilt-target", 2, F32CMotor::FC_SET_MULTI_ANGLE, true, true, true);
+}
+
+// Abort between axes: fire after pan multi-angle target, tilt must not be driven.
+void testF2AbortBetweenAxesViaWriteHook() {
+  FakeMotorSerial serial;
+  F32CMotor motor;
+  motor.begin(&serial, 1);
+  GimbalController gimbal;
+  gimbal.begin(&motor);
+  gimbal.config(1, 2);
+  serial.onFrameWrite = nullptr;
+  require(gimbal.move(1.0f, 1.0f, true, true).valid, "between-axes setup");
+  serial.clearFrames();
+  gimbal.clearMotionAbort();
+
+  bool sawPanTarget = false;
+  serial.onFrameWrite = [&](const Frame& f) {
+    if (!sawPanTarget && f.addr == 1 && f.func == F32CMotor::FC_SET_MULTI_ANGLE) {
+      sawPanTarget = true;
+      gimbal.abortMotion();
+    }
+  };
+  MotorResponse r = gimbal.move(9.0f, 7.0f, true, true);
+  require(!r.valid, "between-axes: must fail");
+  require(sawPanTarget, "between-axes: pan target must be reached");
+  for (const Frame& f : serial.framesFor(2)) {
+    if (f.func == F32CMotor::FC_QUERY) continue;
+    require(false, "between-axes: tilt must not receive mode/enable/speed/target after pan-target abort");
+  }
+}
+
+// clearMotionAbort must not hide a concurrent abortMotion (generation race).
+void testF2ClearDoesNotDropConcurrentAbort() {
+  FakeMotorSerial serial;
+  F32CMotor motor;
+  motor.begin(&serial, 1);
+  GimbalController gimbal;
+  gimbal.begin(&motor);
+  gimbal.config(1, 2);
+
+  gimbal.abortMotion();
+  // Stale clear that observed an older generation cannot arm a new move while a
+  // newer abort remains unobserved. Simulate by aborting again after clear of
+  // the first generation, then moving — must still fail.
+  gimbal.clearMotionAbort();
+  gimbal.abortMotion();
+  serial.clearFrames();
+  MotorResponse r = gimbal.move(3.0f, 2.0f, true, true);
+  require(!r.valid, "concurrent-abort: move fails");
+  for (const Frame& f : serial.frames) {
+    if (f.func == F32CMotor::FC_QUERY) continue;
+    require(false, "concurrent-abort: no motion drive frames");
+  }
+
+  // After an observing clear, motion may proceed again.
+  gimbal.clearMotionAbort();
+  require(gimbal.move(2.0f, 1.0f, true, true).valid, "after clear, move works");
+}
+
 int main() {
   testModeRecoveryAfterMotorOnlyReboot();
   testCenterUsesNearestPanTurn();
@@ -348,9 +474,9 @@ int main() {
   testF1EnableFailureStillAttemptsZeroSpeed();
   testF1SetModeFailureStillAttemptsZeroSpeed();
   testF2AbortAfterSafetyBlocksMotionWrites();
-  testF2AbortBetweenAxesStopsTiltWrites();
-  std::cout << "firmware host regression: 6 tests passed\n";
+  testF2IntraAxisAbortHooks();
+  testF2AbortBetweenAxesViaWriteHook();
+  testF2ClearDoesNotDropConcurrentAbort();
+  std::cout << "firmware host regression: all tests passed\n";
   return 0;
 }
-
-

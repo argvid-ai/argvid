@@ -6,6 +6,7 @@
  */
 #pragma once
 #include <Arduino.h>
+#include <atomic>
 #include "f32c_protocol.h"
 
 class GimbalController {
@@ -33,12 +34,14 @@ public:
     // Query before restoring gains or issuing motion; failure requests a stop.
     MotorResponse positionSafety(bool hasPan, bool hasTilt, float* panDegrees = nullptr);
 
-    // F2: BLE stop/disconnect and cmd_handler set this while a motion command
-    // is mid-execution. move()/center() re-check after blocking positionSafety
-    // and between axis writes so nested queries cannot resume motion.
-    void abortMotion() { _motionAborted = true; }
-    void clearMotionAbort() { _motionAborted = false; }
-    bool isMotionAborted() const { return _motionAborted; }
+    // F2: BLE task stop/disconnect and cmd_handler abort in-flight motion.
+    // Uses paired atomics so a concurrent abort cannot be lost to clearMotionAbort:
+    // abort bumps _abortGeneration; clear observes the current generation; checks
+    // compare the two. move()/center() re-check after queries and after each
+    // prepare/target write so intra-axis gaps cannot resume motion.
+    void abortMotion();
+    void clearMotionAbort();
+    bool isMotionAborted() const;
 
     // 双轴回中 0°
     MotorResponse center(int16_t position_speed = -1);
@@ -73,7 +76,8 @@ public:
     String stateJson();
 
 private:
-    volatile bool _motionAborted = false;
+    std::atomic<uint32_t> _abortGeneration{0};
+    std::atomic<uint32_t> _observedGeneration{0};
     F32CMotor* _motor = nullptr;
     uint8_t _panAddr = 0;
     uint8_t _tiltAddr = 0;
