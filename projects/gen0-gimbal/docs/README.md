@@ -13,7 +13,7 @@ GATT service `0000ff00-0000-1000-8000-00805f9b34fb`, advertised name `F32C-Gimba
 | FF03 | Write | Motor/gimbal JSON commands |
 | FF04 | Notify | Responses, scan results, and log events |
 
-Commands are single-line JSON on FF03; events are single-line JSON on FF04. Ack/timeout: a command that produces no motor-bus response within 500 ms returns an `error` event with the reason; a full bus scan takes about 2 s and returns one `scan_result` event with all discovered motors.
+Commands are single-line JSON on FF03; events are single-line JSON on FF04. Queries that require a motor-bus response fail after 500 ms; write-only commands report that the frame was sent because the motor provides no immediate ACK. A write result is not an execution, arrival, persistence, or holding-torque confirmation. A full bus scan takes about 2 s and returns one `scan_result` event with all discovered motors.
 
 Command set (`cmd` values): `scan`, `enable`, `disable`, `set_mode`, `set_speed`, `set_angle`, `set_multi_angle`, `set_accel`, `query`, `save`, `clear_total`, `set_zero`, `factory_reset`, `setaddr`, `test`, `gimbal_config`, `jog`, `move`, `center`, `zero`. Each carries `addr` plus command-specific fields.
 
@@ -31,4 +31,4 @@ Frame: `7A addr func data... bcc 7B` where `bcc` is the XOR of all preceding byt
 - The web console (`python src/tools/web_app.py`, http://127.0.0.1:5000) discovers serial ports, scans the bus, and drives single or dual motors over USB-TTL; it is the fastest way to verify a motor before wireless bring-up.
 - Web console security (review fix P1-6/P1-7): the server binds to 127.0.0.1 by default and generates a random per-launch token; every `/api/*` call must carry it (query `token=` or `X-Auth-Token` header). The startup banner prints the ready-to-use URL with the token. Binding to all interfaces requires an explicit `--webhost 0.0.0.0` and is discouraged — anyone who can reach the port and obtain the token can command the motors.
 - Android Bluetooth permissions are declared in the app manifest when platform folders are regenerated; iOS requires adding `NSBluetoothAlwaysUsageDescription`. Platform folders are not committed and are created with `flutter create . --project-name gimbal_app`.
-- BLE fail-safe (review fix P1-1): on disconnect the firmware drops all queued commands and forces both axes to speed mode at 0 RPM (holding torque). Stop requests (`jog` with `dir=0`) bypass the command queue via atomic flags (P1-2) so they are never lost to a full queue. These mechanisms require hardware-in-the-loop verification before any safety claim.
+- BLE fail-safe (review fix P1-1): on disconnect the firmware drops all queued commands and sends both axes to speed mode at 0 RPM. The notification does not confirm holding torque or stop latency; those require query or hardware-in-the-loop verification. Stop requests (`jog` with `dir=0`) bypass the command queue via atomic flags (P1-2) so they are never lost to a full queue.

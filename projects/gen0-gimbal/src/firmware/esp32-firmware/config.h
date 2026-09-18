@@ -30,5 +30,5 @@
 #define FRAME_GAP_MS     3       // 协议要求帧间至少 1ms，取 3ms
 
 // ==================== 默认云台配置 ====================
-#define DEFAULT_PAN_ID   2       // 水平轴电机 ID
-#define DEFAULT_TILT_ID  3       // 垂直轴电机 ID
+#define DEFAULT_PAN_ID   1       // 水平轴电机 ID（文档默认值）
+#define DEFAULT_TILT_ID  2       // 垂直轴电机 ID（文档默认值）

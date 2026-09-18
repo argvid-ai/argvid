@@ -70,12 +70,17 @@ class _ConnectPageState extends State<ConnectPage> {
               final on = snap.data == BluetoothAdapterState.on;
               return Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 color: on ? Colors.green.shade900 : Colors.red.shade900,
                 child: Row(
                   children: [
-                    Icon(on ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                        size: 16, color: Colors.white),
+                    Icon(
+                        on
+                            ? Icons.bluetooth_connected
+                            : Icons.bluetooth_disabled,
+                        size: 16,
+                        color: Colors.white),
                     const SizedBox(width: 8),
                     Text(
                       on ? '手机蓝牙已开启' : '手机蓝牙未开启，请先打开蓝牙',
@@ -167,8 +172,9 @@ class _ConnectPageState extends State<ConnectPage> {
                           title: Text(
                             name.isEmpty ? '(未知设备)' : name,
                             style: TextStyle(
-                              fontWeight:
-                                  isGimbal ? FontWeight.bold : FontWeight.normal,
+                              fontWeight: isGimbal
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
                             ),
                           ),
                           subtitle: Text(
@@ -182,7 +188,8 @@ class _ConnectPageState extends State<ConnectPage> {
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.chevron_right),
                           onTap: () => _onConnect(r.device),

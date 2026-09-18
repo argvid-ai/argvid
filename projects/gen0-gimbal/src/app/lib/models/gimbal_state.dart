@@ -1,10 +1,11 @@
 /// 云台与 WiFi 状态模型
+library;
 
 class GimbalInfo {
-  final int panId;       // 水平轴电机 ID（0=未配置）
-  final int tiltId;      // 垂直轴电机 ID（0=未配置）
-  final double panAngle; // 固件最近下发的目标角（±180 表示法）
-  final double tiltAngle;
+  final int panId; // 水平轴电机 ID（0=未配置）
+  final int tiltId; // 垂直轴电机 ID（0=未配置）
+  final double panAngle; // 固件最近下发的目标角（±180 表示法），不是实测位置
+  final double tiltAngle; // 实测位置需通过 query_result 单独确认
 
   const GimbalInfo({
     this.panId = 0,
@@ -15,7 +16,8 @@ class GimbalInfo {
 
   bool get ready => panId > 0 && tiltId > 0;
 
-  GimbalInfo copyWith({int? panId, int? tiltId, double? panAngle, double? tiltAngle}) =>
+  GimbalInfo copyWith(
+          {int? panId, int? tiltId, double? panAngle, double? tiltAngle}) =>
       GimbalInfo(
         panId: panId ?? this.panId,
         tiltId: tiltId ?? this.tiltId,
@@ -25,7 +27,7 @@ class GimbalInfo {
 }
 
 class WifiInfo {
-  final String status;  // disconnected / connecting / connected
+  final String status; // disconnected / connecting / connected
   final String? ip;
   final String? ssid;
   final int? rssi;
@@ -34,7 +36,8 @@ class WifiInfo {
 
   bool get connected => status == 'connected';
 
-  WifiInfo copyWith({String? status, String? ip, String? ssid, int? rssi}) => WifiInfo(
+  WifiInfo copyWith({String? status, String? ip, String? ssid, int? rssi}) =>
+      WifiInfo(
         status: status ?? this.status,
         ip: ip ?? this.ip,
         ssid: ssid ?? this.ssid,

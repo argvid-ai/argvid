@@ -93,13 +93,18 @@ class JoystickState extends State<Joystick> {
               height: size,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: widget.enabled ? Colors.blueGrey.shade900 : Colors.grey.shade800,
+                color: widget.enabled
+                    ? Colors.blueGrey.shade900
+                    : Colors.grey.shade800,
                 border: Border.all(
-                  color: widget.enabled ? Colors.blueGrey.shade500 : Colors.grey.shade600,
+                  color: widget.enabled
+                      ? Colors.blueGrey.shade500
+                      : Colors.grey.shade600,
                   width: 2,
                 ),
                 boxShadow: const [
-                  BoxShadow(color: Colors.black45, blurRadius: 10, spreadRadius: 2),
+                  BoxShadow(
+                      color: Colors.black45, blurRadius: 10, spreadRadius: 2),
                 ],
               ),
             ),
@@ -138,7 +143,8 @@ class JoystickState extends State<Joystick> {
                   border: Border.all(color: const Color(0xFFBAE6FD), width: 2),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF0284C7).withOpacity(_dragging ? 0.7 : 0.4),
+                      color: const Color(0xFF0284C7)
+                          .withValues(alpha: _dragging ? 0.7 : 0.4),
                       blurRadius: 12,
                       spreadRadius: _dragging ? 3 : 1,
                     ),
@@ -159,8 +165,10 @@ class _CrossLinesPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.blueGrey.shade600
       ..strokeWidth = 1;
-    canvas.drawLine(Offset(0, size.height / 2), Offset(size.width, size.height / 2), paint);
-    canvas.drawLine(Offset(size.width / 2, 0), Offset(size.width / 2, size.height), paint);
+    canvas.drawLine(
+        Offset(0, size.height / 2), Offset(size.width, size.height / 2), paint);
+    canvas.drawLine(
+        Offset(size.width / 2, 0), Offset(size.width / 2, size.height), paint);
   }
 
   @override

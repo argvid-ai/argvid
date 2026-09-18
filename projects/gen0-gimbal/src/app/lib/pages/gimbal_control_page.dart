@@ -25,6 +25,7 @@ class GimbalControlPage extends StatefulWidget {
 
 class _GimbalControlPageState extends State<GimbalControlPage> {
   final GlobalKey<JoystickState> _joystickKey = GlobalKey<JoystickState>();
+  bool _applyingParams = false;
 
   // 调参输入（留空 = 不下发该参数；预填已调好的默认值，重启 APP 免重敲）
   // 当前调优结果：位置环 KP=3 KI=15 · 加速度=50 · 速度=60
@@ -37,6 +38,14 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
 
   /// 调参作用轴：0 双轴 / 1 水平 / 2 垂直
   int _pidAxis = 0;
+  bool? _lastReady;
+
+  @override
+  void initState() {
+    super.initState();
+    // 进入页面时清除上一次页面会话尚未发送的位置目标。
+    context.read<GimbalController>().resetPositionSession();
+  }
 
   @override
   void dispose() {
@@ -54,6 +63,11 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
     final ble = context.watch<BleService>();
     final gimbal = context.watch<GimbalController>();
     final ready = ble.gimbal.ready && ble.isConnected;
+    final motionReady = ready && !_applyingParams && !gimbal.motionLocked;
+    if (_lastReady != ready) {
+      _lastReady = ready;
+      gimbal.resetPositionSession();
+    }
     // 同步云台轴 ID 给 controller（速度序列下发需要；纯赋值不触发重建，
     // gimbal_state 变化会带动本页重建，因此此同步是及时的）
     gimbal.updateAxisIds(ble.gimbal.panId, ble.gimbal.tiltId);
@@ -84,9 +98,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  ble.isConnected
-                      ? '云台未配置：请返回电机控制台扫描或填写两轴 ID'
-                      : '蓝牙未连接，请返回重连',
+                  ble.isConnected ? '云台未配置：请返回电机控制台扫描或填写两轴 ID' : '蓝牙未连接，请返回重连',
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
               ),
@@ -102,9 +114,9 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                     _infoChip('水平轴', 'ID ${ble.gimbal.panId}'),
                     _infoChip('垂直轴', 'ID ${ble.gimbal.tiltId}'),
                     _infoChip(
-                      '角度',
+                      '目标角（未确认到位）',
                       'pan ${gimbal.panAngle.toStringAsFixed(1)}° / '
-                      'tilt ${gimbal.tiltAngle.toStringAsFixed(1)}°',
+                          'tilt ${gimbal.tiltAngle.toStringAsFixed(1)}°',
                     ),
                   ],
                 ),
@@ -114,7 +126,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
 
             // ---------- 十字键盘（步进），在上 ----------
             CrossKeypad(
-              enabled: ready,
+              enabled: motionReady,
               onJog: gimbal.onKey,
               onCenter: _center,
             ),
@@ -128,7 +140,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
             // ---------- 摇杆圆盘（相对拖动），在下 ----------
             Joystick(
               key: _joystickKey,
-              enabled: ready,
+              enabled: motionReady,
               onStart: gimbal.onJoystickStart,
               onMove: gimbal.onJoystickMove,
               onEnd: gimbal.onJoystickEnd,
@@ -145,11 +157,12 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
             Card(
               margin: EdgeInsets.zero,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('单轴拉杆（左右拖动设置目标角，相对原点）',
+                    const Text('单轴拉杆（左右拖动设置目标角，相对原点）',
                         style: TextStyle(
                             color: Colors.lightBlue,
                             fontWeight: FontWeight.bold,
@@ -160,18 +173,20 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                       min: -180,
                       max: 180,
                       value: gimbal.panAngle,
-                      enabled: ready,
+                      enabled: motionReady,
                       onChanged: gimbal.onPanLever,
-                      onChangeEnd: gimbal.onPanLever,
+                      onChangeEnd: (v) =>
+                          gimbal.onPanLever(v, finalValue: true),
                     ),
                     AxisLever(
                       label: '垂直',
                       min: -90,
                       max: 90,
                       value: gimbal.tiltAngle,
-                      enabled: ready,
+                      enabled: motionReady,
                       onChanged: gimbal.onTiltLever,
-                      onChangeEnd: gimbal.onTiltLever,
+                      onChangeEnd: (v) =>
+                          gimbal.onTiltLever(v, finalValue: true),
                     ),
                   ],
                 ),
@@ -183,7 +198,8 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
             Card(
               margin: EdgeInsets.zero,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 child: Column(
                   children: [
                     Row(
@@ -223,7 +239,8 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                             divisions: 29,
                             label: '${gimbal.motionSpeed} RPM',
                             onChanged: (v) => gimbal.onSpeedSlider(v.round()),
-                            onChangeEnd: (v) => gimbal.onSpeedSliderEnd(v.round()),
+                            onChangeEnd: (v) =>
+                                gimbal.onSpeedSliderEnd(v.round()),
                           ),
                         ),
                         SizedBox(
@@ -245,8 +262,9 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                       child: Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          '运动速度 = 位置模式最大转速（拖动实时生效，双轴同步设置）',
-                          style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                          '运动速度 = 下次位置运动的最大转速（松手不启动电机）',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey.shade500),
                         ),
                       ),
                     ),
@@ -265,7 +283,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: ready ? gimbal.origin : null,
+                    onPressed: motionReady ? gimbal.origin : null,
                     icon: const Icon(Icons.my_location),
                     label: const Text('当前位置设为原点'),
                     style: ElevatedButton.styleFrom(
@@ -277,7 +295,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: ready ? _center : null,
+                    onPressed: motionReady ? _center : null,
                     icon: const Icon(Icons.center_focus_strong),
                     label: const Text('双轴回原点'),
                     style: ElevatedButton.styleFrom(
@@ -300,7 +318,9 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                   child: Text(
                     ble.lastResult,
                     style: TextStyle(
-                      color: ble.lastResultOk ? Colors.greenAccent : Colors.redAccent,
+                      color: ble.lastResultOk
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
                       fontFamily: 'monospace',
                       fontSize: 13,
                       height: 1.5,
@@ -311,7 +331,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              '提示：所有位置均相对「原点」（多圈位置模式，无过零绕圈问题）；'
+              '提示：水平回原点选择最近的等价原点；垂直轴按 ±90° 限位返回。'
               '机械中位标定请用电机控制台的「当前位设零点」+「保存参数」',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
             ),
@@ -335,7 +355,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('电机调参（PID · 加速度 · 速度）',
+            const Text('电机调参（PID · 加速度 · 速度）',
                 style: TextStyle(
                     color: Colors.lightBlue,
                     fontWeight: FontWeight.bold,
@@ -348,12 +368,19 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                 Expanded(
                   child: SegmentedButton<int>(
                     segments: const [
-                      ButtonSegment(value: 0, label: Text('双轴', style: TextStyle(fontSize: 12))),
-                      ButtonSegment(value: 1, label: Text('水平', style: TextStyle(fontSize: 12))),
-                      ButtonSegment(value: 2, label: Text('垂直', style: TextStyle(fontSize: 12))),
+                      ButtonSegment(
+                          value: 0,
+                          label: Text('双轴', style: TextStyle(fontSize: 12))),
+                      ButtonSegment(
+                          value: 1,
+                          label: Text('水平', style: TextStyle(fontSize: 12))),
+                      ButtonSegment(
+                          value: 2,
+                          label: Text('垂直', style: TextStyle(fontSize: 12))),
                     ],
                     selected: {_pidAxis},
-                    onSelectionChanged: (s) => setState(() => _pidAxis = s.first),
+                    onSelectionChanged: (s) =>
+                        setState(() => _pidAxis = s.first),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -404,9 +431,9 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: ready ? _applyPid : null,
+                    onPressed: ready && !_applyingParams ? _applyPid : null,
                     icon: const Icon(Icons.tune),
-                    label: const Text('下发参数'),
+                    label: Text(_applyingParams ? '下发中…' : '下发参数'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.teal.shade700,
                     ),
@@ -415,7 +442,7 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: ready ? _savePid : null,
+                    onPressed: ready && !_applyingParams ? _savePid : null,
                     icon: const Icon(Icons.save),
                     label: const Text('保存到 Flash'),
                   ),
@@ -424,8 +451,8 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
             ),
             const SizedBox(height: 6),
             Text(
-              '「读取」：加速度为实测值；PID/速度协议读不回，显示固件记录的本次上电下发值，'
-              '「未设置」= 电机用 Flash 内参数。手册建议：速度环 KP 5~50、KI 5~100 从小往大试，'
+              '「读取」：加速度为实测值；PID/位置速度显示网关记录值。'
+              '「下发参数」会停止运动，位置速度仅供后续位置运动使用。速度环 KP 5~50、KI 5~100 从小往大试，'
               '到位后来回抖动时降低 KP/KI；调试时电机须固定牢固。',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
             ),
@@ -444,7 +471,8 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
         SizedBox(
           width: 70,
           child: Text('$axisName ID$addr',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              style:
+                  const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
         ),
         Expanded(
           child: Text(
@@ -492,8 +520,11 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
   }
 
   /// 参数下发到所选轴（留空的参数跳过不发）
-  void _applyPid() {
+  Future<void> _applyPid() async {
+    if (_applyingParams) return;
+    final gimbalController = context.read<GimbalController>();
     final ble = context.read<BleService>();
+    final messenger = ScaffoldMessenger.of(context);
     final g = ble.gimbal;
     final addrs = switch (_pidAxis) {
       1 => [g.panId],
@@ -516,23 +547,33 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
     if (acc != null) params['set_accel'] = acc;
     if (spd != null) params['set_speed'] = spd;
     if (params.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(content: Text('请至少填写一项参数')),
       );
       return;
     }
+    if (params.values.any((v) => v < 0 || v > 65535) ||
+        (spd != null && (spd < 10 || spd > 300)) ||
+        (acc != null && acc == 0)) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('位置速度需为 10–300 RPM，加速度需大于 0，PID 需为 0–65535'),
+      ));
+      return;
+    }
 
-    for (final addr in addrs) {
-      if (addr < 1) continue;
-      params.forEach((cmd, val) {
-        if (cmd == 'set_accel') {
-          ble.sendCmd({'cmd': cmd, 'addr': addr, 'accel': val});
-        } else if (cmd == 'set_speed') {
-          ble.sendCmd({'cmd': cmd, 'addr': addr, 'rpm': val});
-        } else {
-          ble.sendCmd({'cmd': cmd, 'addr': addr, 'val': val});
-        }
-      });
+    setState(() => _applyingParams = true);
+    try {
+      final ok = await gimbalController.applyParameters(addrs, params);
+      if (ok && spd != null && _pidAxis == 0) {
+        gimbalController.onSpeedSliderEnd(spd);
+      }
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(
+            content:
+                Text(ok ? '参数已发送，请查看执行结果；运动需重新操作控件' : '参数发送失败，运动已锁定，请重试下发参数')));
+      }
+    } finally {
+      if (mounted) setState(() => _applyingParams = false);
     }
   }
 
@@ -574,4 +615,3 @@ class _GimbalControlPageState extends State<GimbalControlPage> {
     );
   }
 }
-

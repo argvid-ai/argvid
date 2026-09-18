@@ -77,7 +77,6 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
               ),
             ),
             const SizedBox(height: 16),
-
             TextField(
               controller: _ssidCtrl,
               decoration: const InputDecoration(
@@ -88,7 +87,6 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
               ),
             ),
             const SizedBox(height: 12),
-
             TextField(
               controller: _passCtrl,
               obscureText: _obscure,
@@ -97,13 +95,13 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
                 prefixIcon: const Icon(Icons.lock_outline),
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
-                  icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
+                  icon:
+                      Icon(_obscure ? Icons.visibility_off : Icons.visibility),
                   onPressed: () => setState(() => _obscure = !_obscure),
                 ),
               ),
             ),
             const SizedBox(height: 16),
-
             ElevatedButton.icon(
               onPressed: ble.isConnected ? _send : null,
               icon: const Icon(Icons.send),
@@ -123,7 +121,6 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
               ),
             ),
             const SizedBox(height: 20),
-
             _StatusCard(wifi: ble.wifi),
           ],
         ),
@@ -166,7 +163,8 @@ class _StatusCard extends StatelessWidget {
                     'connecting' => 'ESP32 正在连接 WiFi…',
                     _ => 'ESP32 未连接 WiFi',
                   },
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
                 ),
               ],
             ),
@@ -202,7 +200,8 @@ class _StatusCard extends StatelessWidget {
             ),
             Expanded(
               child: Text(v,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+                  style:
+                      const TextStyle(fontFamily: 'monospace', fontSize: 13)),
             ),
           ],
         ),

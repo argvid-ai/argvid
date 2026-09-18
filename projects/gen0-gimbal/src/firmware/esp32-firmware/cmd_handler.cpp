@@ -7,12 +7,90 @@
 
 CmdHandler cmdHandler;
 
+// F2: BLE-task stop/disconnect must abort a main-task move blocked in UART query.
+static GimbalController* s_motionAbortGimbal = nullptr;
+static void motionAbortHook() {
+    if (s_motionAbortGimbal) s_motionAbortGimbal->abortMotion();
+}
+
 void CmdHandler::begin(F32CMotor* motor, GimbalController* gimbal,
                        WifiManager* wifi, BleServiceManager* ble) {
     _motor = motor;
     _gimbal = gimbal;
     _wifi = wifi;
     _ble = ble;
+    _prefsReady = _prefs.begin("gimbal_params", false);
+    s_motionAbortGimbal = gimbal;
+    if (_ble) _ble->setMotionAbortHook(motionAbortHook);
+}
+
+// F2-new: classify by JSON "cmd" field (not arbitrary substring match).
+static bool jsonIsMotionCommand(const char* json) {
+    StaticJsonDocument<192> doc;
+    if (deserializeJson(doc, json)) return false;
+    const char* cmd = doc["cmd"] | "";
+    return strcmp(cmd, "move") == 0 ||
+           strcmp(cmd, "center") == 0 ||
+           strcmp(cmd, "jog") == 0 ||
+           strcmp(cmd, "set_angle") == 0 ||
+           strcmp(cmd, "set_multi_angle") == 0 ||
+           strcmp(cmd, "set_single_angle") == 0;
+}
+
+String CmdHandler::_paramKey(uint8_t addr, const char* suffix) {
+    return String("a") + String(addr) + "_" + suffix;
+}
+
+void CmdHandler::_loadPersistedParams(uint8_t addr) {
+    if (!_prefsReady || addr < 1 || addr > 127) return;
+    if (_paramsLoaded[addr]) return;
+    _paramsLoaded[addr] = true;
+    MotorParams& p = _params[addr];
+    p.speed_kp = _prefs.getInt(_paramKey(addr, "skp").c_str(), -1);
+    p.speed_ki = _prefs.getInt(_paramKey(addr, "ski").c_str(), -1);
+    p.pos_kp = _prefs.getInt(_paramKey(addr, "pkp").c_str(), -1);
+    p.pos_ki = _prefs.getInt(_paramKey(addr, "pki").c_str(), -1);
+    p.accel = _prefs.getInt(_paramKey(addr, "acc").c_str(), -1);
+    p.speed = _prefs.getInt(_paramKey(addr, "spd").c_str(), -1);
+}
+
+void CmdHandler::_persistParams(uint8_t addr) {
+    if (!_prefsReady || addr < 1 || addr > 127) return;
+    const MotorParams& p = _params[addr];
+    if (p.speed_kp >= 0) _prefs.putInt(_paramKey(addr, "skp").c_str(), p.speed_kp);
+    if (p.speed_ki >= 0) _prefs.putInt(_paramKey(addr, "ski").c_str(), p.speed_ki);
+    if (p.pos_kp >= 0) _prefs.putInt(_paramKey(addr, "pkp").c_str(), p.pos_kp);
+    if (p.pos_ki >= 0) _prefs.putInt(_paramKey(addr, "pki").c_str(), p.pos_ki);
+    if (p.accel >= 0) _prefs.putInt(_paramKey(addr, "acc").c_str(), p.accel);
+    if (p.speed >= 0) _prefs.putInt(_paramKey(addr, "spd").c_str(), p.speed);
+}
+
+void CmdHandler::restoreSavedParams(uint8_t addr) {
+    if (!_motor || addr < 1 || addr > 127) return;
+    _loadPersistedParams(addr);
+    if (_params[addr].speed >= 0) {
+        _gimbal->rememberSpeed(addr, (int16_t)_params[addr].speed);
+    }
+    // Loading the gateway snapshot is deliberately side-effect free. A scan or
+    // configuration command must never write a non-zero speed to a motor.
+}
+
+bool CmdHandler::_applyCachedRuntimeParams(uint8_t addr) {
+    if (!_motor || addr < 1 || addr > 127) return true;
+    _loadPersistedParams(addr);
+    const MotorParams& p = _params[addr];
+    if (p.speed_kp < 0 && p.speed_ki < 0 && p.pos_kp < 0 &&
+        p.pos_ki < 0 && p.accel < 0 && p.speed < 0) return true;
+
+    _motor->setAddr(addr);
+    bool ok = true;
+    // Apply controller gains only as part of an explicit position transaction.
+    if (p.speed_kp >= 0) ok = _motor->setSpeedKp((uint16_t)p.speed_kp).valid && ok;
+    if (p.speed_ki >= 0) ok = _motor->setSpeedKi((uint16_t)p.speed_ki).valid && ok;
+    if (p.pos_kp >= 0) ok = _motor->setPosKp((uint16_t)p.pos_kp).valid && ok;
+    if (p.pos_ki >= 0) ok = _motor->setPosKi((uint16_t)p.pos_ki).valid && ok;
+    if (p.accel >= 0) ok = _motor->setAccel((uint16_t)p.accel).valid && ok;
+    return ok;
 }
 
 // ==================== 命令队列处理 ====================
@@ -25,6 +103,7 @@ void CmdHandler::processQueue() {
     // P1-2：停止旁路优先于队列消费（队列满时停止也不丢）
     bool stopPan, stopTilt;
     if (_ble->takeStopRequest(stopPan, stopTilt)) {
+        _gimbal->abortMotion();
         if (stopPan)  _gimbal->jog("pan", 0, 0);
         if (stopTilt) _gimbal->jog("tilt", 0, 0);
         flushLogs();
@@ -38,8 +117,68 @@ void CmdHandler::processQueue() {
         return;
     }
 
+    const uint32_t rejected = _ble->takeQueueRejected();
+    if (rejected > 0) {
+        _notifyError("BLE 命令队列已满：" + String(rejected) + " 条命令未执行，请降低发送频率后重试");
+    }
+
     BleCmdMsg msg;
     while (_ble->popCommand(msg)) {
+        // F2: safety preemption between EVERY queued command — a stop or
+        // disconnect that arrived while a previous command was executing must
+        // take effect before the next motion-driving command runs. Without this,
+        // a blocking position-safety query could return and still issue
+        // setMode/enable/speed/target after the stop was consumed once at the
+        // top of processQueue.
+        if (_ble->takeDisconnectEvent()) {
+            _gimbal->abortMotion();  // F2: abort any in-flight motion transaction
+            _handleDisconnect();
+            // Connection is gone; drain and exit.
+            BleCmdMsg drop;
+            while (_ble->popCommand(drop)) {}
+            return;
+        }
+        bool sPan, sTilt;
+        if (_ble->takeStopRequest(sPan, sTilt)) {
+            _gimbal->abortMotion();  // F2: abort any in-flight motion transaction
+            if (sPan)  _gimbal->jog("pan", 0, 0);
+            if (sTilt) _gimbal->jog("tilt", 0, 0);
+            flushLogs();
+            // F2-new: drop only queued MOTION commands so old targets do not
+            // execute after the stop. Both the already-popped msg and any
+            // remaining queue entries are classified — parameter commands
+            // (PID, speed config, scan, query) are preserved and processed
+            // directly instead of being silently eaten.
+            {
+                BleCmdMsg peek;
+                std::vector<BleCmdMsg> preserved;
+                // F2-new: classify the already-popped msg too — it could be a
+                // new parameter that arrived after the stop callback cleared
+                // the old queue.
+                {
+                    if (!msg.isWifi && !jsonIsMotionCommand(msg.json)) preserved.push_back(msg);
+                }
+                while (_ble->popCommand(peek)) {
+                    if (peek.isWifi) continue;  // wifi handled separately, safe to drop
+                    if (!jsonIsMotionCommand(peek.json)) preserved.push_back(peek);
+                    // Motion commands are silently dropped.
+                }
+                // Process preserved (non-motion) commands directly instead of
+                // trying to re-queue them — popCommand removes from the queue
+                // and no push-back API exists on the BLE service.
+                for (const auto& saved : preserved) {
+                    if (!_ble->isConnected()) break;
+                    _handleMotorCmd(String(saved.json));
+                }
+            }
+            return;
+        }
+        if (!_ble->isConnected()) {
+            BleCmdMsg drop;
+            while (_ble->popCommand(drop)) {}
+            return;
+        }
+        _gimbal->clearMotionAbort();  // F2: observe abort generation for this new command (concurrent abort still wins)
         if (msg.isWifi) {
             _handleWifiCmd(String(msg.json));
         } else {
@@ -52,7 +191,7 @@ void CmdHandler::processQueue() {
 
 // ==================== 失联停机（P1-1） ====================
 void CmdHandler::_handleDisconnect() {
-    // 云台就绪则双轴强制速度模式 0 RPM（保持力矩锁定，防止断连瞬间
+    // 云台就绪则双轴下发速度模式 0 RPM（目标是避免断连瞬间
     // 残留的 jog 继续驱动电机）。停机机制需真机 HIL 验证。
     MotorResponse r = _gimbal->emergencyStop();
     _notifyError(String("BLE 已断开：") + r.parsed_text);
@@ -81,6 +220,8 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         MotorInfo motors[16];
         size_t n = _motor->scanBus(SCAN_START_ADDR, SCAN_END_ADDR, motors, 16, SCAN_TIMEOUT_MS);
         _gimbal->autoConfig(motors, n);   // 扫描到 >=2 台自动配置云台（与 Web 版一致）
+        _gimbal->invalidateAllModes();
+        for (size_t i = 0; i < n; i++) restoreSavedParams(motors[i].addr);
         _notifyScanResult(motors, n, true);
         if (_gimbal->ready()) _notifyGimbalState();
         return;
@@ -94,7 +235,13 @@ void CmdHandler::_handleMotorCmd(const String& json) {
             _notifyResult(false, "电机 ID 必须 1~127");
             return;
         }
+        if (pan == tilt) {
+            _notifyResult(false, "水平和垂直轴不能使用同一个电机 ID");
+            return;
+        }
         _gimbal->config(pan, tilt);
+        restoreSavedParams(pan);
+        restoreSavedParams(tilt);
         _notifyResult(true, "云台已配置: 水平=ID" + String(pan) + ", 垂直=ID" + String(tilt));
         _notifyGimbalState();
         return;
@@ -122,14 +269,64 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         bool hasTilt = !doc["tilt"].isNull();
         float pan = doc["pan"] | 0.0f;
         float tilt = doc["tilt"] | 0.0f;
-        MotorResponse r = _gimbal->move(pan, tilt, hasPan, hasTilt);
+        int speed = doc["speed"] | -1;
+        if (speed < -1 || speed > 300) { _notifyResult(false, "位置速度必须在 0~300 RPM 范围"); return; }
+        MotorResponse safety = _gimbal->positionSafety(hasPan, hasTilt);
+        if (!safety.valid) { _notifyResult(false, safety.parsed_text); return; }
+        // F2: positionSafety blocks on a UART query. A stop or disconnect that
+        // arrived during the query must be re-checked here, before any motion-
+        // driving writes. Without this, the already-popped command would issue
+        // mode/enable/speed/target after the stop was consumed at the queue level.
+        {
+            bool rPan, rTilt;
+            if (_ble->takeDisconnectEvent()) {
+                _handleDisconnect();
+                _notifyResult(false, "运动命令在位置安全查询后被断连抢占，未执行");
+                return;
+            }
+            if (_ble->takeStopRequest(rPan, rTilt)) {
+                _gimbal->abortMotion();
+                if (rPan)  _gimbal->jog("pan", 0, 0);
+                if (rTilt) _gimbal->jog("tilt", 0, 0);
+                _notifyResult(false, "运动命令在位置安全查询后被停止抢占，已转停止");
+                return;
+            }
+        }
+        if ((hasPan && !_applyCachedRuntimeParams(_gimbal->panAddr())) ||
+            (hasTilt && !_applyCachedRuntimeParams(_gimbal->tiltAddr()))) {
+            _notifyResult(false, "恢复位置控制参数失败，已拒绝运动"); return;
+        }
+        MotorResponse r = _gimbal->move(pan, tilt, hasPan, hasTilt, (int16_t)speed);
         _notifyResult(r.valid, r.parsed_text);
         _notifyGimbalState();
         return;
     }
     if (cmdStr == "center") {
-        MotorResponse r = _gimbal->center();
-        _notifyResult(r.valid, r.valid ? "双轴已回中 (0°)" : r.parsed_text);
+        int speed = doc["speed"] | -1;
+        if (speed < -1 || speed > 300) { _notifyResult(false, "位置速度必须在 0~300 RPM 范围"); return; }
+        MotorResponse safety = _gimbal->positionSafety(true, true);
+        if (!safety.valid) { _notifyResult(false, safety.parsed_text); return; }
+        // F2: re-check safety after the blocking center query (same as move).
+        {
+            bool rPan, rTilt;
+            if (_ble->takeDisconnectEvent()) {
+                _handleDisconnect();
+                _notifyResult(false, "回中命令在安全查询后被断连抢占，未执行");
+                return;
+            }
+            if (_ble->takeStopRequest(rPan, rTilt)) {
+                _gimbal->abortMotion();
+                if (rPan)  _gimbal->jog("pan", 0, 0);
+                if (rTilt) _gimbal->jog("tilt", 0, 0);
+                _notifyResult(false, "回中命令在安全查询后被停止抢占，已转停止");
+                return;
+            }
+        }
+        if (!_applyCachedRuntimeParams(_gimbal->panAddr()) || !_applyCachedRuntimeParams(_gimbal->tiltAddr())) {
+            _notifyResult(false, "恢复位置控制参数失败，已拒绝回中"); return;
+        }
+        MotorResponse r = _gimbal->center((int16_t)speed);
+        _notifyResult(r.valid, r.valid ? "双轴回中目标已发送（到位未确认）" : r.parsed_text);
         _notifyGimbalState();
         return;
     }
@@ -147,6 +344,9 @@ void CmdHandler::_handleMotorCmd(const String& json) {
     }
 
     // ---------------- 单电机命令（均需 addr） ----------------
+    if (addr < 1 || addr > 127) { _notifyResult(false, "电机 ID 必须 1~127"); return; }
+    // Load before any edits so a later scan cannot overwrite unsaved changes.
+    _loadPersistedParams(addr);
     _motor->setAddr(addr);
     MotorResponse r;
 
@@ -163,13 +363,22 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         // P1-5：外部改模式后云台轴缓存失效
         if (r.valid) _gimbal->invalidateAxis(addr);
     }
+    else if (cmdStr == "set_position_speed") {
+        int rpm = doc["rpm"] | -1;
+        if (rpm < 0 || rpm > 300) { _notifyResult(false, "位置速度必须在 0~300 RPM 范围"); return; }
+        _params[addr].speed = rpm;
+        _gimbal->rememberSpeed(addr, (int16_t)rpm);
+        r.valid = true;
+        r.parsed_text = "位置速度已缓存，不会立即驱动电机";
+    }
     else if (cmdStr == "set_speed") {
         // P1-3：单电机速度命令加上限（防爆转）
         int rpm = doc["rpm"] | 0;
         if (rpm > 300 || rpm < -300) { _notifyResult(false, "速度必须在 ±300 RPM 范围"); return; }
         int16_t rpm16 = (int16_t)rpm;
         r = _motor->setSpeed(rpm16);
-        if (r.valid) _params[addr].speed = rpm16;
+        // Raw set_speed is the motor console's immediate speed command. It is
+        // intentionally not retained as a position-control speed.
     }
     else if (cmdStr == "set_angle") {
         float angle = doc["angle"] | 0.0f;
@@ -220,7 +429,10 @@ void CmdHandler::_handleMotorCmd(const String& json) {
         _notifyResult(false, "查询失败: " + r.parsed_text);
         return;
     }
-    else if (cmdStr == "save")           { r = _motor->saveParams(); }
+    else if (cmdStr == "save") {
+        r = _motor->saveParams();
+        if (r.valid) _persistParams(addr);
+    }
     else if (cmdStr == "clear_total")    { r = _motor->clearTotalAngle(); }
     else if (cmdStr == "set_zero")       { r = _motor->setSingleZero(); }
     else if (cmdStr == "factory_reset") {
@@ -369,7 +581,7 @@ void CmdHandler::_notifyGimbalState() {
 }
 
 void CmdHandler::_notifyParamsResult(uint8_t addr, const MotorParams& p) {
-    // -1 = 本次上电未设置（电机沿用 Flash 内参数，APP 显示"未设置"）
+    // -1 = 没有本次下发值，也没有网关 NVS 快照可供恢复。
     JsonDocument doc;
     doc["event"] = "params_result";
     doc["addr"] = addr;
@@ -397,3 +609,4 @@ void CmdHandler::pushSystemStatus() {
     serializeJson(doc, out);
     _ble->notifyStatus(out);
 }
+

@@ -26,6 +26,9 @@ struct BleCmdMsg {
 class BleServiceManager {
 public:
     typedef void (*ConnectCallback)(bool connected);
+    // F2: BLE-task stop/disconnect can abort a main-task motion blocked in
+    // positionSafety/move without waiting for processQueue to resume.
+    typedef void (*MotionAbortHook)();
 
     void begin(const char* deviceName);
     bool isConnected() const { return _connected; }
@@ -40,6 +43,7 @@ public:
     // 队列：主循环出队执行
     bool popCommand(BleCmdMsg& msg);
     size_t pendingCommands() const;
+    uint32_t takeQueueRejected();
 
     // P1-1：断连事件（蓝牙栈回调置位，主循环消费后执行失联停机）
     bool takeDisconnectEvent();
@@ -53,6 +57,7 @@ public:
     void _queueCmdPublic(bool isWifi, const String& json);
 
     void setConnectCallback(ConnectCallback cb) { _connectCb = cb; }
+    void setMotionAbortHook(MotionAbortHook hook) { _motionAbortHook = hook; }
 
 private:
     BLEServer*         _server = nullptr;
@@ -62,10 +67,16 @@ private:
     BLECharacteristic* _charResp = nullptr;
     bool _connected = false;
     ConnectCallback _connectCb = nullptr;
+    MotionAbortHook _motionAbortHook = nullptr;
     String _statusReadValue = "{}";
 
     std::atomic<bool>    _disconnectPending{false};  // P1-1 断连待处理标志
     std::atomic<uint8_t> _stopFlags{0};              // P1-2 bit0=pan, bit1=tilt
+    std::atomic<uint32_t> _queueRejected{0};         // 队列满时记录丢弃数量
+    std::atomic<uint32_t> _connectionGeneration{0}; // 分包不得跨连接继续发送
+    uint16_t _notifyMessageId = 0;
 
     void _queueCmd(bool isWifi, const String& json);
+    void _notifyJson(BLECharacteristic* characteristic, const String& json);
+    void _fireMotionAbort();
 };

@@ -35,7 +35,8 @@ class MotorCard extends StatelessWidget {
           child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: selected ? Colors.lightBlue : Colors.indigo.shade800,
                   borderRadius: BorderRadius.circular(8),

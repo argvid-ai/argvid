@@ -79,7 +79,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
             onPressed: () async {
               await ble.disconnect();
               if (context.mounted) {
-                Navigator.of(context).pushNamedAndRemoveUntil('/', (r) => false);
+                Navigator.of(context)
+                    .pushNamedAndRemoveUntil('/', (r) => false);
               }
             },
           ),
@@ -99,16 +100,19 @@ class _MotorControlPageState extends State<MotorControlPage> {
                     children: [
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed:
-                              (ble.motorScanning || !ble.isConnected) ? null : ble.scanMotors,
+                          onPressed: (ble.motorScanning || !ble.isConnected)
+                              ? null
+                              : ble.scanMotors,
                           icon: ble.motorScanning
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
                                 )
                               : const Icon(Icons.search),
-                          label: Text(ble.motorScanning ? '扫描中…' : '扫描总线电机 (ID 1~16)'),
+                          label: Text(
+                              ble.motorScanning ? '扫描中…' : '扫描总线电机 (ID 1~16)'),
                         ),
                       ),
                     ],
@@ -118,7 +122,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       child: Text(
                         ble.motorScanning ? '正在扫描…' : '尚未扫描或未发现电机',
-                        style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                        style: TextStyle(
+                            color: Colors.grey.shade500, fontSize: 13),
                         textAlign: TextAlign.center,
                       ),
                     )
@@ -147,7 +152,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                           onPressed: selected == null
                               ? null
                               : () => _sendWithAddr({'cmd': 'enable'}),
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green.shade700),
                           child: const Text('使能电机'),
                         ),
                       ),
@@ -157,7 +163,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                           onPressed: selected == null
                               ? null
                               : () => _sendWithAddr({'cmd': 'disable'}),
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade700),
                           child: const Text('失能电机'),
                         ),
                       ),
@@ -167,7 +174,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                           onPressed: selected == null
                               ? null
                               : () => _sendWithAddr({'cmd': 'test'}),
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.purple.shade700),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.purple.shade700),
                           child: const Text('联通测试'),
                         ),
                       ),
@@ -178,18 +186,33 @@ class _MotorControlPageState extends State<MotorControlPage> {
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<int>(
-                          value: _mode,
+                          initialValue: _mode,
                           decoration: const InputDecoration(
                             labelText: '控制模式',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
                           items: const [
-                            DropdownMenuItem(value: 0, child: Text('0 速度模式', style: TextStyle(fontSize: 13))),
-                            DropdownMenuItem(value: 1, child: Text('1 多圈位置 (T型)', style: TextStyle(fontSize: 13))),
-                            DropdownMenuItem(value: 2, child: Text('2 单圈位置 (T型)', style: TextStyle(fontSize: 13))),
-                            DropdownMenuItem(value: 3, child: Text('3 多圈位置 (直通)', style: TextStyle(fontSize: 13))),
-                            DropdownMenuItem(value: 4, child: Text('4 单圈位置 (直通)', style: TextStyle(fontSize: 13))),
+                            DropdownMenuItem(
+                                value: 0,
+                                child: Text('0 速度模式',
+                                    style: TextStyle(fontSize: 13))),
+                            DropdownMenuItem(
+                                value: 1,
+                                child: Text('1 多圈位置 (T型)',
+                                    style: TextStyle(fontSize: 13))),
+                            DropdownMenuItem(
+                                value: 2,
+                                child: Text('2 单圈位置 (T型)',
+                                    style: TextStyle(fontSize: 13))),
+                            DropdownMenuItem(
+                                value: 3,
+                                child: Text('3 多圈位置 (直通)',
+                                    style: TextStyle(fontSize: 13))),
+                            DropdownMenuItem(
+                                value: 4,
+                                child: Text('4 单圈位置 (直通)',
+                                    style: TextStyle(fontSize: 13))),
                           ],
                           onChanged: (v) => setState(() => _mode = v ?? 0),
                         ),
@@ -198,7 +221,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                       ElevatedButton(
                         onPressed: selected == null
                             ? null
-                            : () => _sendWithAddr({'cmd': 'set_mode', 'mode': _mode}),
+                            : () => _sendWithAddr(
+                                {'cmd': 'set_mode', 'mode': _mode}),
                         child: const Text('设置'),
                       ),
                     ],
@@ -320,11 +344,13 @@ class _MotorControlPageState extends State<MotorControlPage> {
                                     content: const Text('将清除电机全部参数，此操作不可撤销。'),
                                     actions: [
                                       TextButton(
-                                        onPressed: () => Navigator.pop(ctx, false),
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, false),
                                         child: const Text('取消'),
                                       ),
                                       TextButton(
-                                        onPressed: () => Navigator.pop(ctx, true),
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, true),
                                         child: const Text('确认'),
                                       ),
                                     ],
@@ -334,7 +360,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                                   _sendWithAddr({'cmd': 'factory_reset'});
                                 }
                               },
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade700),
                         child: const Text('恢复出厂'),
                       ),
                     ],
@@ -373,7 +400,9 @@ class _MotorControlPageState extends State<MotorControlPage> {
                         child: TextField(
                           controller: _panIdCtrl,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly
+                          ],
                           decoration: const InputDecoration(
                             labelText: '水平轴 ID',
                             border: OutlineInputBorder(),
@@ -386,7 +415,9 @@ class _MotorControlPageState extends State<MotorControlPage> {
                         child: TextField(
                           controller: _tiltIdCtrl,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly
+                          ],
                           decoration: const InputDecoration(
                             labelText: '垂直轴 ID',
                             border: OutlineInputBorder(),
@@ -404,7 +435,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                           onPressed: () {
                             final p = int.tryParse(_panIdCtrl.text) ?? 0;
                             final t = int.tryParse(_tiltIdCtrl.text) ?? 0;
-                            _send({'cmd': 'gimbal_config', 'pan': p, 'tilt': t});
+                            _send(
+                                {'cmd': 'gimbal_config', 'pan': p, 'tilt': t});
                           },
                           child: const Text('应用电机配置'),
                         ),
@@ -444,7 +476,9 @@ class _MotorControlPageState extends State<MotorControlPage> {
                 child: Text(
                   ble.lastResult,
                   style: TextStyle(
-                    color: ble.lastResultOk ? Colors.greenAccent : Colors.redAccent,
+                    color: ble.lastResultOk
+                        ? Colors.greenAccent
+                        : Colors.redAccent,
                     fontFamily: 'monospace',
                     fontSize: 13,
                     height: 1.5,
@@ -499,7 +533,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
           Expanded(
             child: TextField(
               controller: controller,
-              keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                  signed: true, decimal: true),
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'^-?\d*\.?\d*')),
               ],
@@ -508,7 +543,8 @@ class _MotorControlPageState extends State<MotorControlPage> {
                 border: const OutlineInputBorder(),
                 hintText: hint,
                 suffixText: unit,
-                suffixStyle: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                suffixStyle:
+                    TextStyle(fontSize: 11, color: Colors.grey.shade500),
               ),
               style: const TextStyle(fontSize: 14),
               onSubmitted: (_) => onSend(),

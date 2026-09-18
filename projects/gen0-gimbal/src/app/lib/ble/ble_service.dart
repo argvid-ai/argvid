@@ -9,6 +9,7 @@ import '../models/motor.dart';
 import '../models/motor_params.dart';
 import '../utils/log_formatter.dart';
 import 'ble_uuids.dart';
+import 'ble_json_receiver.dart';
 import 'command_sink.dart';
 
 /// BLE 连接状态
@@ -56,8 +57,18 @@ class BleService extends ChangeNotifier implements CommandSink {
   StreamSubscription? _respSub;
   StreamSubscription? _statusSub;
 
-  bool _wantConnected = false;    // 用户主动断开后置 false，意外断开后保持 true 用于自动重连
+  late final _respReceiver = BleJsonReceiver(
+    onEvent: _handleRespEvent,
+    onError: _onReceiveError,
+  );
+  late final _statusReceiver = BleJsonReceiver(
+    onEvent: _handleStatusEvent,
+    onError: _onReceiveError,
+  );
+
+  bool _wantConnected = false; // 用户主动断开后置 false，意外断开后保持 true 用于自动重连
   int _reconnectAttempts = 0;
+  Future<void> _writeTail = Future<void>.value();
 
   static const int maxLogs = 300;
 
@@ -66,7 +77,9 @@ class BleService extends ChangeNotifier implements CommandSink {
   // ============================================================
 
   /// 开始扫描 BLE 设备（超时自动停止）
-  Future<void> startScan({Duration timeout = const Duration(seconds: 6)}) async {
+  Future<void> startScan({
+    Duration timeout = const Duration(seconds: 6),
+  }) async {
     if (scanning) return;
     scanning = true;
     statusMsg = '';
@@ -106,8 +119,9 @@ class BleService extends ChangeNotifier implements CommandSink {
         final name = _nameOf(r);
         if (name.toUpperCase().contains(BleUuids.deviceNamePrefix)) return true;
         try {
-          return r.advertisementData.serviceUuids
-              .any((u) => u.str128 == BleUuids.service);
+          return r.advertisementData.serviceUuids.any(
+            (u) => u.str128 == BleUuids.service,
+          );
         } catch (_) {
           return false;
         }
@@ -126,7 +140,8 @@ class BleService extends ChangeNotifier implements CommandSink {
   // ============================================================
 
   Future<bool> connect(BluetoothDevice device) async {
-    if (connState == BleConnState.connecting || connState == BleConnState.connected) {
+    if (connState == BleConnState.connecting ||
+        connState == BleConnState.connected) {
       return false;
     }
     connState = BleConnState.connecting;
@@ -170,22 +185,26 @@ class BleService extends ChangeNotifier implements CommandSink {
       if (_charCmd == null || _charResp == null) {
         // 诊断：打印设备实际暴露的所有服务与特征，便于对照固件排查
         final dump = services
-            .map((s) =>
-                '${s.uuid.str} => ${s.characteristics.map((c) => c.uuid.str).join(', ')}')
+            .map(
+              (s) =>
+                  '${s.uuid.str} => ${s.characteristics.map((c) => c.uuid.str).join(', ')}',
+            )
             .join(' | ');
         _addLog('ERR', '服务发现结果: $dump');
         throw Exception('未找到云台 GATT 特征（FF03/FF04），请确认固件版本');
       }
 
-      // 订阅 Notify
+      // 先监听再启用 Notify；不回放 lastValueStream 的初始空值或旧缓存。
+      await _respSub?.cancel();
+      _respReceiver.reset();
+      _respSub = _charResp!.onValueReceived.listen(_respReceiver.add);
       await _charResp!.setNotifyValue(true);
-      _respSub?.cancel();
-      _respSub = _charResp!.lastValueStream.listen(_onRespNotify);
 
       if (_charStatus != null) {
+        await _statusSub?.cancel();
+        _statusReceiver.reset();
+        _statusSub = _charStatus!.onValueReceived.listen(_statusReceiver.add);
         await _charStatus!.setNotifyValue(true);
-        _statusSub?.cancel();
-        _statusSub = _charStatus!.lastValueStream.listen(_onStatusNotify);
       }
 
       connState = BleConnState.connected;
@@ -228,6 +247,8 @@ class BleService extends ChangeNotifier implements CommandSink {
   }
 
   Future<void> _safeDisconnect() async {
+    _respReceiver.reset();
+    _statusReceiver.reset();
     try {
       _respSub?.cancel();
       _statusSub?.cancel();
@@ -245,6 +266,8 @@ class BleService extends ChangeNotifier implements CommandSink {
   }
 
   void _onUnexpectedDisconnect() {
+    _respReceiver.reset();
+    _statusReceiver.reset();
     if (!_wantConnected) {
       connState = BleConnState.disconnected;
       notifyListeners();
@@ -261,7 +284,9 @@ class BleService extends ChangeNotifier implements CommandSink {
     final device = _device;
     if (device == null) return;
     _reconnectAttempts = 0;
-    while (_wantConnected && _reconnectAttempts < 3 && connState != BleConnState.connected) {
+    while (_wantConnected &&
+        _reconnectAttempts < 3 &&
+        connState != BleConnState.connected) {
       _reconnectAttempts++;
       await Future.delayed(const Duration(seconds: 2));
       if (!_wantConnected) return;
@@ -281,23 +306,33 @@ class BleService extends ChangeNotifier implements CommandSink {
   // ============================================================
 
   /// 发送电机/云台命令（写 FF03）
-  Future<void> sendCmd(Map<String, dynamic> cmd) async {
-    final char = _charCmd;
-    if (char == null || !isConnected) {
-      lastResult = '未连接设备';
-      lastResultOk = false;
-      notifyListeners();
-      return;
-    }
-    final json = jsonEncode(cmd);
-    try {
-      await char.write(utf8.encode(json), withoutResponse: false);
-      _addLog('APP', json);
-    } catch (e) {
-      lastResult = '发送失败: $e';
-      lastResultOk = false;
-      notifyListeners();
-    }
+  @override
+  Future<bool> sendCmd(Map<String, dynamic> cmd) async {
+    // FlutterBluePlus does not provide an application-level transaction for
+    // several writes issued by different UI surfaces. Serialize every FF03
+    // write here so a parameter apply cannot race a queued position move.
+    final operation = _writeTail.then((_) async {
+      final char = _charCmd;
+      if (char == null || !isConnected) {
+        lastResult = '未连接设备';
+        lastResultOk = false;
+        notifyListeners();
+        return false;
+      }
+      final json = jsonEncode(cmd);
+      try {
+        await char.write(utf8.encode(json), withoutResponse: false);
+        _addLog('APP', json);
+        return true;
+      } catch (e) {
+        lastResult = '发送失败: $e';
+        lastResultOk = false;
+        notifyListeners();
+        return false;
+      }
+    });
+    _writeTail = operation.then((_) {});
+    return operation;
   }
 
   /// 发送 WiFi 配置（写 FF01）
@@ -328,22 +363,9 @@ class BleService extends ChangeNotifier implements CommandSink {
   // Notify 分发
   // ============================================================
 
-  void _onRespNotify(List<int> value) {
-    _handleJson(value, _handleRespEvent);
-  }
-
-  void _onStatusNotify(List<int> value) {
-    _handleJson(value, _handleStatusEvent);
-  }
-
-  void _handleJson(List<int> value, void Function(Map<String, dynamic>) handler) {
-    try {
-      final obj = jsonDecode(utf8.decode(value));
-      if (obj is Map<String, dynamic>) handler(obj);
-    } catch (e) {
-      _addLog('ERR', 'JSON 解析失败: $e');
-      notifyListeners();
-    }
+  void _onReceiveError(String message) {
+    _addLog('ERR', message);
+    notifyListeners();
   }
 
   /// FF04：cmd_result / scan_result / query_result / log / error / gimbal_state
@@ -359,16 +381,17 @@ class BleService extends ChangeNotifier implements CommandSink {
         final list = evt['motors'];
         motors = (list is List)
             ? list
-                .map((m) => Motor(
-                      id: (m['id'] as num).toInt(),
-                      volt: (m['volt'] as num).toDouble(),
-                    ))
+                .map(
+                  (m) => Motor(
+                    id: (m['id'] as num).toInt(),
+                    volt: (m['volt'] as num).toDouble(),
+                  ),
+                )
                 .toList()
             : <Motor>[];
         motorScanning = false;
-        lastResult = motors.isEmpty
-            ? '未发现电机，请检查接线/供电/共地'
-            : '发现 ${motors.length} 台电机';
+        lastResult =
+            motors.isEmpty ? '未发现电机，请检查接线/供电/共地' : '发现 ${motors.length} 台电机';
         lastResultOk = motors.isNotEmpty;
         // 选中电机失效则清除
         if (selectedAddr != null && !motors.any((m) => m.id == selectedAddr)) {
@@ -416,7 +439,8 @@ class BleService extends ChangeNotifier implements CommandSink {
           panId: (evt['pan'] as num?)?.toInt() ?? gimbal.panId,
           tiltId: (evt['tilt'] as num?)?.toInt() ?? gimbal.tiltId,
           panAngle: (evt['pan_angle'] as num?)?.toDouble() ?? gimbal.panAngle,
-          tiltAngle: (evt['tilt_angle'] as num?)?.toDouble() ?? gimbal.tiltAngle,
+          tiltAngle:
+              (evt['tilt_angle'] as num?)?.toDouble() ?? gimbal.tiltAngle,
         );
         break;
 
